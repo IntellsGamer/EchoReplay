@@ -5,6 +5,8 @@ import com.echoreplay.model.TimelineEvent;
 import com.echoreplay.select.Cuboid;
 import com.echoreplay.storage.GzipRecordingReader;
 import com.echoreplay.storage.MetaParser;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
@@ -54,6 +56,10 @@ public final class ReplaySession {
     private final Map<Integer, Integer> stableToRuntime = new HashMap<>();
     // runtimeId -> players this fake entity was actually spawned to
     private final Map<Integer, Set<UUID>> spawnedFor = new HashMap<>();
+    // runtimeId -> last stance flags byte / pose, so successive stance events
+    // can be merged into one absolute metadata packet (metadata is not relative).
+    private final Map<Integer, Byte> runtimeFlags = new HashMap<>();
+    private final Map<Integer, com.github.retrooper.packetevents.protocol.entity.pose.EntityPose> runtimePose = new HashMap<>();
 
     record EntityPose(com.echoreplay.model.Vec3d pos, com.echoreplay.model.Rotation rot) {}
 
@@ -115,6 +121,8 @@ public final class ReplaySession {
         stableToRuntime.clear();
         spawnedFor.clear();
         entityPoses.clear();
+        runtimeFlags.clear();
+        runtimePose.clear();
         // apply t=0 entity spawns
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() == 0) {
             applyEvent(timeline.get(appliedIndex));
@@ -219,7 +227,8 @@ public final class ReplaySession {
             case TimelineEvent.Animation a -> onAnimation(a);
             case TimelineEvent.Chat c -> onChat(c);
             case TimelineEvent.Equipment eq -> onEquipment(eq);
-            case TimelineEvent.SneakSprint ignored -> {}
+            case TimelineEvent.Pose p -> onPose(p);
+            case TimelineEvent.SneakSprint s -> onSneakSprint(s);
             default -> {}
         }
     }
@@ -305,6 +314,16 @@ public final class ReplaySession {
             type = null;
         }
         if (type == null) return; // unknown type — cannot faithfully spawn
+        // Defensive: if a duplicate EntitySpawn slipped in for the same npc,
+        // don't create a second orphaned fake entity — just refresh position.
+        if (stableToRuntime.containsKey(s.npcId())) {
+            int existing = stableToRuntime.get(s.npcId());
+            entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
+            for (Player p : liveViewers()) {
+                fakes.positionSync(p, existing, s.pos(), s.rot(), true);
+            }
+            return;
+        }
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
@@ -380,6 +399,45 @@ public final class ReplaySession {
         for (Player p : liveViewers()) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p, eqPacket);
+        }
+    }
+
+    private void onPose(TimelineEvent.Pose p) {
+        Integer runtime = stableToRuntime.get(p.npcId());
+        if (runtime == null) return;
+        runtimePose.put(runtime, toEntityPose(p.pose()));
+        pushStance(runtime);
+    }
+
+    private void onSneakSprint(TimelineEvent.SneakSprint s) {
+        Integer runtime = stableToRuntime.get(s.npcId());
+        if (runtime == null) return;
+        runtimeFlags.put(runtime, (byte) (s.flags() & 0xFF));
+        pushStance(runtime);
+    }
+
+    private static com.github.retrooper.packetevents.protocol.entity.pose.EntityPose toEntityPose(int id) {
+        for (com.github.retrooper.packetevents.protocol.entity.pose.EntityPose p
+                : com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.values()) {
+            if (p.ordinal() == id) return p;
+        }
+        return com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.STANDING;
+    }
+
+    /** Build and broadcast the merged stance metadata (flags + pose + eye height). */
+    private void pushStance(int runtime) {
+        byte flags = runtimeFlags.getOrDefault(runtime, (byte) 0);
+        com.github.retrooper.packetevents.protocol.entity.pose.EntityPose pose =
+                runtimePose.getOrDefault(runtime,
+                        com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.STANDING);
+        java.util.List<EntityData<?>> data = new ArrayList<>();
+        data.add(new EntityData<>(0, EntityDataTypes.BYTE, flags));
+        data.add(new EntityData<>(6, EntityDataTypes.ENTITY_POSE, pose));
+        boolean crouched = (flags & 0x02) != 0;
+        float eye = crouched ? 1.54f : 1.62f;
+        data.add(new EntityData<>(8, EntityDataTypes.FLOAT, eye));
+        for (Player p : liveViewers()) {
+            fakes.setMetadata(p, runtime, data);
         }
     }
 

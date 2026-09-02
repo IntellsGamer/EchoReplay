@@ -143,6 +143,7 @@ public final class RecordingManager {
 
     private void finishSnapshotAndRecord() {
         entityTickRecorder.reset();
+        session.clearEntitySpawned();
         regionDiffRecorder.reset(session);
         snapshotExistingEntities();
         session.setRecording();

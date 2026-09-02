@@ -11,6 +11,7 @@ import com.github.retrooper.packetevents.protocol.player.TextureProperty;
 import com.github.retrooper.packetevents.protocol.player.UserProfile;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityHeadLook;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityPositionSync;
 import com.github.retrooper.packetevents.protocol.entity.EntityPositionData;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
@@ -96,5 +97,12 @@ public final class FakeEntityTracker {
 
     public void headLook(Player viewer, int runtimeId, float headYaw) {
         send(viewer, new WrapperPlayServerEntityHeadLook(runtimeId, headYaw));
+    }
+
+    /** Send an entity-metadata patch (stance flags / pose / eye height) to a viewer. */
+    public void setMetadata(Player viewer, int runtimeId,
+                             java.util.List<com.github.retrooper.packetevents.protocol.entity.data.EntityData<?>> data) {
+        if (data.isEmpty()) return;
+        send(viewer, new WrapperPlayServerEntityMetadata(runtimeId, data));
     }
 }

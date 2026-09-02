@@ -42,6 +42,9 @@ public final class EntityRecorder implements Listener {
         Entity ent = e.getEntity();
         if (ent instanceof Player) return;
         if (!inCuboid(s, ent)) return;
+        // Emit the spawn only the first time it is seen (the per-tick recorder
+        // would otherwise emit a second spawn on its next observation).
+        if (!s.markEntitySpawned(ent.getUniqueId())) return;
         int npc = s.npcIdFor(ent.getUniqueId());
         s.emit(new TimelineEvent.EntitySpawn(s.mediaMillis(), npc, ent.getUniqueId(),
                 ent.getType().getKey().toString(),

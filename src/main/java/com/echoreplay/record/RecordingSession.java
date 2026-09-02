@@ -28,6 +28,10 @@ public final class RecordingSession {
     private final EventSink sink = new EventSink();
     private final AtomicInteger npcIdAlloc = new AtomicInteger(1);
     private final Map<UUID, Integer> idMap = new HashMap<>();
+    // UUIDs that already had an EntitySpawn emitted (dedupes the event-listener
+    // path against the per-tick recorder path so a given entity only ever gets
+    // one spawn event).
+    private final java.util.Set<UUID> entitySpawned = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // global palette over the whole recording
     private final Map<String, Integer> paletteIndex = new HashMap<>();
@@ -100,6 +104,20 @@ public final class RecordingSession {
             idMap.put(uuid, id);
         }
         return id;
+    }
+
+    /**
+     * Returns true when this is the first EntitySpawn emission for the uuid
+     * across all recorders, so a single hot spawn produces exactly one spawn
+     * event (and subsequent tick-recordings only emit moves).
+     */
+    public boolean markEntitySpawned(UUID uuid) {
+        return entitySpawned.add(uuid);
+    }
+
+    /** Clear the per-entity spawn bookkeeping when a fresh recording starts. */
+    public void clearEntitySpawned() {
+        entitySpawned.clear();
     }
 
     /**
