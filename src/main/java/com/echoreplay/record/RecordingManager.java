@@ -271,6 +271,7 @@ public final class RecordingManager {
         RecordingSession s = session;
         s.setCancelled();
         s.sink().close();
+        regionDiffRecorder.stop();
         session = null;
         return "<green>Cancelled recording '" + s.name() + "'.</green>";
     }
@@ -292,6 +293,7 @@ public final class RecordingManager {
         Cuboid c = s.cuboid();
 
         session = null;
+        regionDiffRecorder.stop();
 
         final long fd = duration;
         final List<String> fpal = palette;

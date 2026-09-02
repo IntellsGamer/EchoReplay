@@ -11,11 +11,11 @@ recording:
   capture-particles: true
   max-particles-per-second: 400
   max-duration-minutes: 30
-  # Region-wide diff: rescans the whole cuboid to catch EVERY block change,
-  # even ones that never fire a Bukkit event (crystal explosions, cancelled
-  # breaks, plugin writes, obsidian/portal formation). Interval in server ticks.
-  scan-interval-ticks: 20
-  scan-blocks-per-tick: 8000
+  # Region-wide diff: a background thread continuously rescans the whole cuboid
+  # to catch EVERY block change, even ones that never fire a Bukkit event
+  # (crystal explosions, cancelled breaks, plugin writes, obsidian/portal
+  # formation). Runs async and full-time (no interval gap).
+  scan-interval-ticks: 1
 replay:
   virtual-packets-only: false
   force-spectator: true
