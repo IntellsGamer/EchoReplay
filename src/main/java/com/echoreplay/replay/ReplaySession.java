@@ -61,6 +61,13 @@ public final class ReplaySession {
     private final Map<Integer, Byte> runtimeFlags = new HashMap<>();
     private final Map<Integer, com.github.retrooper.packetevents.protocol.entity.pose.EntityPose> runtimePose = new HashMap<>();
 
+    // Live terrain captured when playback starts (world mode only), so stopplay /
+    // auto-end can restore the region to its pre-playback state.
+    private boolean liveCaptured = false;
+    private java.util.List<String> livePalette = java.util.List.of();
+    private int[] liveData = new int[0];
+    private final Map<String, byte[]> liveNbt = new HashMap<>();
+
     record EntityPose(com.echoreplay.model.Vec3d pos, com.echoreplay.model.Rotation rot) {}
 
     public ReplaySession(EchoReplayPlugin plugin, String name, World world, boolean virtual,
@@ -131,8 +138,8 @@ public final class ReplaySession {
     }
 
     /** Advance the clock and apply not-yet-applied events up to media time. */
-    public void tick() {
-        if (!started || stopping) return;
+    public boolean tick() {
+        if (!started || stopping) return false;
         double media = clock.tick();
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= media) {
             TimelineEvent ev = timeline.get(appliedIndex);
@@ -140,8 +147,10 @@ public final class ReplaySession {
             applyEvent(ev);
         }
         if (appliedIndex >= timeline.size() && media >= durationMs()) {
-            // reached the end; hold
+            // Reached the end: auto-finish (restore terrain + unlock) via manager.
+            return true;
         }
+        return false;
     }
 
     /**
@@ -174,6 +183,12 @@ public final class ReplaySession {
         started = true;
         stopping = false;
         appliedIndex = 0;
+        // Capture the region's pre-playback terrain (once) so we can restore it
+        // when playback ends, before the recorded snapshot wipes it.
+        if (!virtual && !liveCaptured) {
+            captureLiveTerrain();
+            liveCaptured = true;
+        }
         applySnapshot();
         clock.resume();
     }
@@ -185,6 +200,10 @@ public final class ReplaySession {
             destroyFor(e.getValue());
         }
         stableToRuntime.clear();
+        // Put the region back to its pre-playback state (world mode only).
+        if (!virtual && liveCaptured) {
+            restoreLiveTerrain();
+        }
     }
 
     private List<Player> liveViewers() {
@@ -475,6 +494,78 @@ public final class ReplaySession {
                 int wy = cuboid.min().y() + relY;
                 int wz = cuboid.min().z() + relZ;
                 var tile = world.getBlockAt(wx, wy, wz).getState(true);
+                com.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
+                tile.update(true);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /**
+     * Capture the region's current (pre-playback) block state into local palette /
+     * data arrays plus tile-entity NBT, so stopplay can undo world-mode changes.
+     */
+    private void captureLiveTerrain() {
+        int sx = cuboid.xSize(), sy = cuboid.ySize(), sz = cuboid.zSize();
+        java.util.Map<String, Integer> palIdx = new java.util.LinkedHashMap<>();
+        java.util.List<String> pal = new ArrayList<>();
+        palIdx.put("minecraft:air", 0);
+        pal.add("minecraft:air");
+        int[] data = new int[sx * sy * sz];
+        int idx = 0;
+        for (int dy = 0; dy < sy; dy++) {
+            for (int dz = 0; dz < sz; dz++) {
+                for (int dx = 0; dx < sx; dx++) {
+                    org.bukkit.block.Block b = world.getBlockAt(
+                            cuboid.min().x() + dx, cuboid.min().y() + dy, cuboid.min().z() + dz);
+                    String state = b.getBlockData() == null
+                            ? "minecraft:air" : b.getBlockData().getAsString(true);
+                    Integer pi = palIdx.get(state);
+                    if (pi == null) {
+                        pi = pal.size();
+                        palIdx.put(state, pi);
+                        pal.add(state);
+                    }
+                    data[idx++] = pi;
+                    org.bukkit.block.BlockState bs = b.getState();
+                    if (bs != null && com.echoreplay.record.Snapshotter.needsNbt(bs.getType())) {
+                        byte[] nb = com.echoreplay.util.NbtBytes.serializeBlockState(bs);
+                        if (nb != null && nb.length > 0) {
+                            liveNbt.put(dx + "," + dy + "," + dz, nb);
+                        }
+                    }
+                }
+            }
+        }
+        livePalette = pal;
+        liveData = data;
+    }
+
+    /** Re-apply the pre-playback terrain captured when playback started. */
+    private void restoreLiveTerrain() {
+        if (liveData.length == 0) return;
+        int idx = 0;
+        for (int dy = 0; dy < cuboid.ySize(); dy++) {
+            for (int dz = 0; dz < cuboid.zSize(); dz++) {
+                for (int dx = 0; dx < cuboid.xSize(); dx++) {
+                    int pi = liveData[idx++];
+                    try {
+                        world.getBlockAt(cuboid.min().x() + dx, cuboid.min().y() + dy,
+                                        cuboid.min().z() + dz)
+                                .setBlockData(Bukkit.createBlockData(livePalette.get(pi)), false);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }
+        for (Map.Entry<String, byte[]> e : liveNbt.entrySet()) {
+            String[] parts = e.getKey().split(",");
+            try {
+                int relX = Integer.parseInt(parts[0]);
+                int relY = Integer.parseInt(parts[1]);
+                int relZ = Integer.parseInt(parts[2]);
+                var tile = world.getBlockAt(cuboid.min().x() + relX, cuboid.min().y() + relY,
+                                cuboid.min().z() + relZ).getState(true);
                 com.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
                 tile.update(true);
             } catch (Exception ignored) {

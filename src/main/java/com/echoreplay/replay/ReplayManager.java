@@ -52,7 +52,11 @@ public final class ReplayManager implements Listener {
 
     public void onTick() {
         if (session != null) {
-            session.tick();
+            boolean finished = session.tick();
+            if (finished) {
+                // Playback reached the end: restore terrain + unlock, end session.
+                stopPlay(false);
+            }
         }
     }
 
@@ -198,6 +202,123 @@ public final class ReplayManager implements Listener {
                 e.setCancelled(true);
             }
         }
+    }
+
+    /** True while a world-mode replay is locking this block's location. */
+    private boolean isLocked(org.bukkit.block.Block b) {
+        return session != null && !session.virtual()
+                && b.getWorld().getUID().equals(session.world().getUID())
+                && session.cuboid().contains(b.getX(), b.getY(), b.getZ());
+    }
+
+    private boolean isLocked(World w, int x, int y, int z) {
+        return session != null && !session.virtual()
+                && w.getUID().equals(session.world().getUID())
+                && session.cuboid().contains(x, y, z);
+    }
+
+    // --- Region lock: block ANY player/live change inside the cuboid while a
+    //     world-mode replay runs, so the playback cannot be manipulated. The
+    //     region is unlocked automatically on stopplay / auto-end. ---
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockPlace(org.bukkit.event.block.BlockPlaceEvent e) {
+        if (isLocked(e.getBlock()) || isLocked(e.getBlockAgainst())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockMultiPlace(org.bukkit.event.block.BlockMultiPlaceEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockFromTo(org.bukkit.event.block.BlockFromToEvent e) {
+        if (isLocked(e.getBlock()) || isLocked(e.getToBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockSpread(org.bukkit.event.block.BlockSpreadEvent e) {
+        if (isLocked(e.getBlock()) || isLocked(e.getSource())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockFade(org.bukkit.event.block.BlockFadeEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockBurn(org.bukkit.event.block.BlockBurnEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockIgnite(org.bukkit.event.block.BlockIgniteEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent e) {
+        e.blockList().removeIf(b -> isLocked(b));
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEntityExplode(org.bukkit.event.entity.EntityExplodeEvent e) {
+        e.blockList().removeIf(b -> isLocked(b));
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onFluidLevelChange(org.bukkit.event.block.FluidLevelChangeEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBucketEmpty(org.bukkit.event.player.PlayerBucketEmptyEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBucketFill(org.bukkit.event.player.PlayerBucketFillEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockDispense(org.bukkit.event.block.BlockDispenseEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockGrow(org.bukkit.event.block.BlockGrowEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockPistonExtend(org.bukkit.event.block.BlockPistonExtendEvent e) {
+        if (isLocked(e.getBlock()) || e.getBlocks().stream().anyMatch(this::isLocked)) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockPistonRetract(org.bukkit.event.block.BlockPistonRetractEvent e) {
+        if (isLocked(e.getBlock()) || e.getBlocks().stream().anyMatch(this::isLocked)) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlockForm(org.bukkit.event.block.EntityBlockFormEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onLiquidToBlock(org.bukkit.event.block.BlockFormEvent e) {
+        if (isLocked(e.getBlock())) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onPreventPhysics(org.bukkit.event.block.BlockCanBuildEvent e) {
+        if (isLocked(e.getBlock())) e.setBuildable(false);
     }
 
     @EventHandler
