@@ -39,6 +39,7 @@
                 <directory>${basedir}/../src/main/resources</directory>
                 <excludes>
                     <exclude>plugin.yml</exclude>
+                                <!-- Only exclude from PacketEvents dependency, keep EchoReplay plugin.yml -->
                 </excludes>
             </resource>
         </resources>
@@ -91,6 +92,12 @@
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.github.retrooper:packetevents-spigot</artifact>
+                                    <excludes>
+                                        <exclude>plugin.yml</exclude>
                                     </excludes>
                                 </filter>
                             </filters>
