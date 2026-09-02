@@ -40,6 +40,11 @@ public final class PalettedStorage {
 
     public int paletteSize() { return palette.size(); }
 
+    public int indexOf(String stateString) {
+        Integer idx = indexOf.get(stateString);
+        return idx == null ? -1 : idx;
+    }
+
     public int get(int x, int y, int z) {
         return data[index(x, y, z)];
     }

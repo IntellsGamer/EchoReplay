@@ -259,9 +259,19 @@ public final class ReplaySession {
                 .info("DBG BlockSet t=" + clock.mediaTime() + " @" + wx + "," + wy + "," + wz
                         + " -> " + data.getAsString(true)
                         + " (paletteIdx=" + b.paletteIndex() + ")");
-        // Update the actual world block; the server broadcasts the change to all
-        // nearby players (world-mode), so the viewer sees it break/place reliably.
-        world.getBlockAt(wx, wy, wz).setBlockData(data, false);
+        // Update the actual world block; applyPhysics=true so neighbor updates,
+        // gravity and state broadcast happen (the per-event physics-freeze
+        // handler still cancels any unrecorded cascade inside the cuboid).
+        world.getBlockAt(wx, wy, wz).setBlockData(data, true);
+        // Also push the change straight to all viewers so the break/update is
+        // guaranteed visible even if the viewer's client didn't get a chunk sync.
+        var change = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange(
+                new com.github.retrooper.packetevents.util.Vector3i(wx, wy, wz), 0);
+        change.setBlockState(
+                io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitBlockData(data));
+        for (Player p : liveViewers()) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(p, change);
+        }
         // Re-apply block-entity NBT (sign text, container contents, respawn
         // anchor charges, etc.) so these blocks update rather than just place.
         if (b.nbt() != null && b.nbt().length > 0) {

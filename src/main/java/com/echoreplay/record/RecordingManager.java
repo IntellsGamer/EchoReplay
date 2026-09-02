@@ -50,11 +50,13 @@ public final class RecordingManager {
     private long flushCounterMs = 0;
     private final EquipmentRecorder equipmentRecorder;
     private final EntityTickRecorder entityTickRecorder;
+    private final RegionDiffRecorder regionDiffRecorder;
 
     public RecordingManager(EchoReplayPlugin plugin) {
         this.plugin = plugin;
         this.equipmentRecorder = new EquipmentRecorder(plugin);
         this.entityTickRecorder = new EntityTickRecorder(plugin);
+        this.regionDiffRecorder = new RegionDiffRecorder(plugin);
     }
 
     public void onEnable(FileConfiguration config) {
@@ -64,6 +66,7 @@ public final class RecordingManager {
         maxDurationMinutes = config.getInt("recording.max-duration-minutes", 30);
         recordingsDir = new File(plugin.getDataFolder(), config.getString("storage.directory", "recordings"));
         recordingsDir.mkdirs();
+        regionDiffRecorder.configure(config.getInt("recording.scan-interval-ticks", 20));
     }
 
     public void registerListeners(EchoReplayPlugin p) {
@@ -140,6 +143,7 @@ public final class RecordingManager {
 
     private void finishSnapshotAndRecord() {
         entityTickRecorder.reset();
+        regionDiffRecorder.reset(session);
         snapshotExistingEntities();
         session.setRecording();
     }
@@ -201,6 +205,7 @@ public final class RecordingManager {
         session.advanceClock(50);
         equipmentRecorder.tick();
         entityTickRecorder.tick();
+        regionDiffRecorder.tick();
         flushCounterMs += 50;
         if (flushCounterMs >= flushSeconds * 1000L) {
             flushCounterMs = 0;
