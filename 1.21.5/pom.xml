@@ -24,7 +24,7 @@
 
     <!-- Keep the historical artifact name for the running 1.21.5 server. -->
     <build>
-        <finalName>echoreplay-1.0.0-SNAPSHOT</finalName>
+        <finalName>echoreplay-1.21.5+1.0.0</finalName>
         <resources>
             <resource>
                 <directory>../src/main/resources</directory>

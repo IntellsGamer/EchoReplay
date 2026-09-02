@@ -24,6 +24,6 @@
 
     <!-- Nyx style: module artifact name matches version for versioning -->
     <build>
-        <finalName>echoreplay-1.21.11</finalName>
+        <finalName>echoreplay-1.21.11+1.0.0</finalName>
     </build>
 </project>

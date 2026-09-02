@@ -39,10 +39,9 @@ jobs:
           last=$(( ${#vers[@]} - 1 ))
           i=0
           for v in "${vers[@]}"; do
-            jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v.jar"
-            # 1.21.5 module uses historic artifact name for backward compat
+            jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v+1.0.0.jar"
             if [ "$v" = "1.21.5" ]; then
-              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.0.0-SNAPSHOT.jar"
+              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.21.5+1.0.0-SNAPSHOT.jar"
             fi
 
             if [ ! -f "$jar" ]; then
