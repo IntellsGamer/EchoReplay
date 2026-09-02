@@ -34,16 +34,47 @@ public final class MovementRecorder extends PacketListenerAbstract {
     public void onPacketReceive(PacketReceiveEvent event) {
         RecordingSession s = session();
         if (s == null) return;
-        if (event.getPacketType() == PacketType.Play.Client.PLAYER_POSITION
-                || event.getPacketType() == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
-            User user = event.getUser();
-            if (user.getUUID() == null) return;
-            Player p = plugin.getServer().getPlayer(user.getUUID());
-            if (p == null) return;
-            if (!s.world().getUID().equals(p.getWorld().getUID())) return;
-            var loc = p.getLocation();
-            if (!s.cuboid().contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) return;
+        User user = event.getUser();
+        if (user.getUUID() == null) return;
+        Player p = plugin.getServer().getPlayer(user.getUUID());
+        if (p == null) return;
+        if (!s.world().getUID().equals(p.getWorld().getUID())) return;
+        if (!s.cuboid().contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) return;
+
+        var pt = event.getPacketType();
+        if (pt == PacketType.Play.Client.PLAYER_POSITION
+                || pt == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
+            double x, y, z;
+            float yaw, pitch;
+            try {
+                if (pt == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
+                    var w = new com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPositionAndRotation(event);
+                    var pos = w.getPosition();
+                    x = pos.x; y = pos.y; z = pos.z;
+                    yaw = w.getYaw();
+                    pitch = w.getPitch();
+                } else {
+                    var w = new com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPosition(event);
+                    var pos = w.getPosition();
+                    x = pos.x; y = pos.y; z = pos.z;
+                    var loc = p.getLocation();
+                    yaw = loc.getYaw();
+                    pitch = loc.getPitch();
+                }
+            } catch (Exception e) {
+                // fall back to server-side location
+                var loc = p.getLocation();
+                x = loc.getX(); y = loc.getY(); z = loc.getZ();
+                yaw = loc.getYaw(); pitch = loc.getPitch();
+            }
             int npc = s.npcIdFor(p.getUniqueId());
+            s.emit(new TimelineEvent.Move(s.mediaMillis(), npc,
+                    new Vec3d(x, y, z),
+                    new Rotation(pitch, yaw, yaw),
+                    p.isOnGround()));
+        } else if (pt == PacketType.Play.Client.PLAYER_ROTATION) {
+            int npc = s.npcIdFor(p.getUniqueId());
+            var loc = p.getLocation();
             s.emit(new TimelineEvent.Move(s.mediaMillis(), npc,
                     new Vec3d(loc.getX(), loc.getY(), loc.getZ()),
                     new Rotation(loc.getPitch(), loc.getYaw(), loc.getYaw()),

@@ -49,7 +49,12 @@ public final class FakeEntityTracker {
 
     public void spawnPlayer(Player viewer, int runtimeId, UUID uuid, String name, PlayerSkin skin,
                             Vec3d pos, Rotation rot) {
-        UserProfile profile = new UserProfile(uuid, name);
+        // Use a fresh random UUID rather than the recorded player's UUID. This
+        // avoids client-side conflicts when the viewer is also the actor (same
+        // UUID already in the local tab list), which otherwise leaves the fake
+        // player invisible / non-responsive to move packets.
+        UUID fakeUuid = UUID.randomUUID();
+        UserProfile profile = new UserProfile(fakeUuid, name);
         if (skin != null && skin.hasValue()) {
             String sig = (skin.signature() != null && !skin.signature().isEmpty()) ? skin.signature() : null;
             profile.setTextureProperties(java.util.List.of(new TextureProperty("textures", skin.value(),
@@ -61,7 +66,7 @@ public final class FakeEntityTracker {
         send(viewer, info);
 
         WrapperPlayServerSpawnEntity spawn = new WrapperPlayServerSpawnEntity(
-                runtimeId, uuid, EntityTypes.PLAYER,
+                runtimeId, fakeUuid, EntityTypes.PLAYER,
                 new com.github.retrooper.packetevents.protocol.world.Location(pos.x(), pos.y(), pos.z(),
                         rot.yaw(), rot.pitch()),
                 0f, 0, null);
