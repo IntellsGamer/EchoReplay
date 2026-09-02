@@ -65,6 +65,6 @@ jobs:
               gh release create "$v" "$latest_flag" \
                 --title "EchoReplay $v" \
                 --notes "EchoReplay $v — Server-side region replay plugin for Paper $v." \
-                --asset "$jar"
+                "$jar"
             fi
           done
