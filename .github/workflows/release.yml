@@ -1,12 +1,12 @@
-name: Publish EchoReplay Release Jar
+name: Publish EchoReplay Release Jars
 
 on:
   workflow_dispatch:
     inputs:
       versions:
-        description: 'Plugin version(s) to publish (e.g. 1.0.0 1.0.1). Space-separated. Versions must exist in the pom.'
+        description: 'Space-separated Minecraft versions to publish (e.g. 1.21.5 1.21.11)'
         required: false
-        default: '1.0.0'
+        default: '1.21.5 1.21.11'
 permissions:
   contents: write
 
@@ -23,7 +23,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Build shade jar
+      - name: Build shade jars
         run: mvn -q -DskipTests clean package
 
       - name: Publish / update releases
@@ -31,23 +31,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          PLUGIN_VERSION=$(grep -oPm1 '(?<=<version>)[0-9]+\.[0-9]+\.[0-9]+' pom.xml)
-          echo "Plugin version: $PLUGIN_VERSION"
+          NYX_VERSION=$(grep -oPm1 '(?<=<version>)[0-9]+\.[0-9]+\.[0-9]+' pom.xml)
+          echo "Plugin version: $NYX_VERSION"
 
-          jar="$GITHUB_WORKSPACE/target/echoreplay-$PLUGIN_VERSION.jar"
-          if [ ! -f "$jar" ]; then
-            echo "::error::Missing built jar: $jar"
-            exit 1
-          fi
+          read -r -a vers <<< "${{ inputs.versions }}"
+          mapfile -t vers < <(printf '%s\n' "${vers[@]}" | sort -t. -k1,1n -k2,2n -k3,3n)
+          last=$(( ${#vers[@]} - 1 ))
+          i=0
+          for v in "${vers[@]}"; do
+            jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v.jar"
+            # 1.21.5 module uses historic artifact name for backward compat
+            if [ "$v" = "1.21.5" ]; then
+              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.0.0-SNAPSHOT.jar"
+            fi
 
-          tag="$PLUGIN_VERSION"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag exists -> updating asset with --clobber"
-            gh release upload "$tag" "$jar" --clobber
-            gh release edit "$tag" --latest --draft=false
-          else
-            echo "Creating release $tag"
-            gh release create "$tag" "$jar" --latest \
-              --title "EchoReplay $PLUGIN_VERSION" \
-              --notes "EchoReplay $PLUGIN_VERSION — Server-side region replay plugin for Paper 1.21.4+."
-          fi
+            if [ ! -f "$jar" ]; then
+              echo "::error::Missing built jar: $jar (is $v a valid module?)"
+              exit 1
+            fi
+
+            if [ "$i" -eq "$last" ]; then
+              latest_flag="--latest"
+            else
+              latest_flag="--latest=false"
+            fi
+            i=$((i + 1))
+
+            if gh release view "$v" >/dev/null 2>&1; then
+              echo "Release $v exists -> updating assets with --clobber"
+              gh release upload "$v" "$jar" --clobber
+              gh release edit "$v" "$latest_flag" --draft=false
+            else
+              echo "Creating release $v"
+              gh release create "$v" "$latest_flag" \
+                --title "EchoReplay $v" \
+                --notes "EchoReplay $v — Server-side region replay plugin for Paper $v." \
+                --asset "$jar"
+            fi
+          done
