@@ -4,6 +4,7 @@ import com.echoreplay.EchoReplayPlugin;
 import com.echoreplay.model.BlockPos;
 import com.echoreplay.model.TimelineEvent;
 import com.echoreplay.select.Cuboid;
+import com.echoreplay.util.NbtBytes;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.event.EventHandler;
@@ -48,9 +49,17 @@ public final class WorldRecorder implements Listener {
         var block = loc.getBlock();
         String state = block.getBlockData() == null ? "minecraft:air" : block.getBlockData().getAsString(true);
         int pi = s.paletteIndex(state);
+        byte[] nbt = null;
+        try {
+            var tile = block.getState(true);
+            if (tile != null) nbt = NbtBytes.serializeBlockState(tile);
+            if (nbt != null && nbt.length == 0) nbt = null;
+        } catch (Exception ignored) {
+            nbt = null;
+        }
         s.emit(new TimelineEvent.BlockSet(s.mediaMillis(),
                 new BlockPos(loc.getBlockX() - c.min().x(), loc.getBlockY() - c.min().y(), loc.getBlockZ() - c.min().z()),
-                pi, null));
+                pi, nbt));
         return true;
     }
 

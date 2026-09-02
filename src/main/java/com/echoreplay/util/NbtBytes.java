@@ -22,6 +22,32 @@ public final class NbtBytes {
 
     private NbtBytes() {}
 
+    private static final String ANCHOR = "org.bukkit.block.RespawnAnchor";
+
+    private static boolean isRespawnAnchor(Object state) {
+        try {
+            return state != null && Class.forName(ANCHOR).isInstance(state);
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    private static int getAnchorCharges(Object state) {
+        try {
+            Object v = state.getClass().getMethod("getCharges").invoke(state);
+            return v instanceof Number n ? n.intValue() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static void setAnchorCharges(Object state, int charges) {
+        try {
+            state.getClass().getMethod("setCharges", int.class).invoke(state, charges);
+        } catch (Exception ignored) {
+        }
+    }
+
     public static byte[] serializeBlockState(BlockState state) {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try (BukkitObjectOutputStream out = new BukkitObjectOutputStream(bos)) {
@@ -46,6 +72,9 @@ public final class NbtBytes {
                 } else {
                     out.writeUTF("");
                 }
+            } else if (isRespawnAnchor(state)) {
+                out.writeInt(0x52455341); // "RESA"
+                out.writeInt(getAnchorCharges(state));
             } else {
                 out.writeInt(0);
             }
@@ -74,6 +103,9 @@ public final class NbtBytes {
                     var profile = org.bukkit.Bukkit.createProfile(name);
                     sk.setOwnerProfile(profile);
                 }
+            } else if (header == 0x52455341) { // RESA
+                int charges = in.readInt();
+                if (isRespawnAnchor(state)) setAnchorCharges(state, charges);
             } else if (state instanceof Container c) {
                 Inventory inv = c.getSnapshotInventory();
                 for (int i = 0; i < inv.getSize(); i++) {

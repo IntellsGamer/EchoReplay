@@ -12,8 +12,10 @@ import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -50,6 +52,8 @@ public final class ReplaySession {
 
     // track per-stable whether currently spawned viewer-visible
     private final Map<Integer, Integer> stableToRuntime = new HashMap<>();
+    // runtimeId -> players this fake entity was actually spawned to
+    private final Map<Integer, Set<UUID>> spawnedFor = new HashMap<>();
 
     record EntityPose(com.echoreplay.model.Vec3d pos, com.echoreplay.model.Rotation rot) {}
 
@@ -102,14 +106,14 @@ public final class ReplaySession {
         if (!virtual) {
             SnapshotApplier.applyToWorld(world, cuboid, snapshotData, snapshotSizeX, snapshotSizeY,
                     snapshotSizeZ, palette);
+            applySnapNbt();
         }
         // reset fake entities: destroy all, clear mappings
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
-            for (Player p : liveViewers()) {
-                fakes.destroy(p, e.getValue());
-            }
+            destroyFor(e.getValue());
         }
         stableToRuntime.clear();
+        spawnedFor.clear();
         entityPoses.clear();
         // apply t=0 entity spawns
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() == 0) {
@@ -170,9 +174,7 @@ public final class ReplaySession {
         stopping = true;
         started = false;
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
-            for (Player p : liveViewers()) {
-                fakes.destroy(p, e.getValue());
-            }
+            destroyFor(e.getValue());
         }
         stableToRuntime.clear();
     }
@@ -181,7 +183,22 @@ public final class ReplaySession {
         List<Player> out = new ArrayList<>();
         for (UUID id : viewers) {
             Player p = Bukkit.getPlayer(id);
-            if (p != null) out.add(p);
+            if (p != null && !out.contains(p)) out.add(p);
+        }
+        // Broadcast to every player in the replay's world who is close enough to
+        // the cuboid to see what is happening, so the replay is visible to all
+        // nearby players (not just whoever typed /er play or /er watch).
+        int margin = plugin.cfg().getInt("replay.auto-watch-radius", 32);
+        for (Player p : world.getPlayers()) {
+            if (out.contains(p)) continue;
+            var loc = p.getLocation();
+            if (!loc.getWorld().getUID().equals(world.getUID())) continue;
+            int bx = loc.getBlockX(), by = loc.getBlockY(), bz = loc.getBlockZ();
+            if (bx >= cuboid.min().x() - margin && bx <= cuboid.max().x() + margin
+                    && bz >= cuboid.min().z() - margin && bz <= cuboid.max().z() + margin
+                    && by >= cuboid.min().y() - margin && by <= cuboid.max().y() + margin) {
+                out.add(p);
+            }
         }
         return out;
     }
@@ -208,6 +225,8 @@ public final class ReplaySession {
     }
 
     private void onBlockBreakAnim(TimelineEvent.BlockBreakAnim b) {
+        EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+                .info("DBG BlockBreakAnim t=" + clock.mediaTime() + " stage=" + b.stage() + " npc=" + b.breakerNpcId());
         Integer runtime = stableToRuntime.get(b.breakerNpcId());
         if (runtime == null) runtime = 0;
         int wx = cuboid.min().x() + b.pos().x();
@@ -227,18 +246,31 @@ public final class ReplaySession {
         int wx = cuboid.min().x() + b.pos().x();
         int wy = cuboid.min().y() + b.pos().y();
         int wz = cuboid.min().z() + b.pos().z();
-        String state = palette.get(b.paletteIndex());
-        BlockData data = Bukkit.createBlockData(state);
+        BlockData data;
+        try {
+            String state = palette.get(b.paletteIndex());
+            data = Bukkit.createBlockData(state);
+        } catch (Exception ex) {
+            EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+                    .warning("BlockSet apply failed palette=" + b.paletteIndex() + " size=" + palette.size() + " " + ex);
+            return;
+        }
+        EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+                .info("DBG BlockSet t=" + clock.mediaTime() + " @" + wx + "," + wy + "," + wz
+                        + " -> " + data.getAsString(true)
+                        + " (paletteIdx=" + b.paletteIndex() + ")");
+        // Update the actual world block; the server broadcasts the change to all
+        // nearby players (world-mode), so the viewer sees it break/place reliably.
         world.getBlockAt(wx, wy, wz).setBlockData(data, false);
-        // Also push the change straight to viewers via block change packets so
-        // the client sees it even if a chunk resync or physics event interferes.
-        var change = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange(
-                new com.github.retrooper.packetevents.util.Vector3i(wx, wy, wz), 0);
-        change.setBlockState(
-                io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitBlockData(data));
-        for (Player p : liveViewers()) {
-            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
-                    .sendPacket(p, change);
+        // Re-apply block-entity NBT (sign text, container contents, respawn
+        // anchor charges, etc.) so these blocks update rather than just place.
+        if (b.nbt() != null && b.nbt().length > 0) {
+            try {
+                var tile = world.getBlockAt(wx, wy, wz).getState(true);
+                com.echoreplay.util.NbtBytes.applyBlockState(tile, b.nbt());
+                tile.update(true);
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -248,6 +280,7 @@ public final class ReplaySession {
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
         for (Player p : liveViewers()) {
             fakes.spawnPlayer(p, runtime, s.uuid(), s.name(), s.skin(), s.pos(), s.rot());
+            recordSpawnedFor(runtime, p);
         }
     }
 
@@ -267,6 +300,7 @@ public final class ReplaySession {
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
         for (Player p : liveViewers()) {
             fakes.spawnMob(p, runtime, s.uuid(), type, s.pos(), s.rot());
+            recordSpawnedFor(runtime, p);
         }
     }
 
@@ -343,8 +377,40 @@ public final class ReplaySession {
         Integer runtime = stableToRuntime.remove(stableId);
         entityPoses.remove(stableId);
         if (runtime == null) return;
-        for (Player p : liveViewers()) {
-            fakes.destroy(p, runtime);
+        destroyFor(runtime);
+    }
+
+    /** Send a destroy packet to exactly the players this fake entity was spawned for. */
+    private void destroyFor(int runtimeId) {
+        Set<UUID> ids = spawnedFor.remove(runtimeId);
+        if (ids == null) return;
+        for (UUID id : ids) {
+            Player p = Bukkit.getPlayer(id);
+            if (p != null) fakes.destroy(p, runtimeId);
+        }
+    }
+
+    private void recordSpawnedFor(int runtimeId, Player p) {
+        spawnedFor.computeIfAbsent(runtimeId, k -> new HashSet<>()).add(p.getUniqueId());
+    }
+
+    /** Apply recorded tile-entity NBT for the initial snapshot blocks. */
+    private void applySnapNbt() {
+        if (snapNbt.isEmpty()) return;
+        for (Map.Entry<String, byte[]> e : snapNbt.entrySet()) {
+            String[] parts = e.getKey().split(",");
+            try {
+                int relX = Integer.parseInt(parts[0]);
+                int relY = Integer.parseInt(parts[1]);
+                int relZ = Integer.parseInt(parts[2]);
+                int wx = cuboid.min().x() + relX;
+                int wy = cuboid.min().y() + relY;
+                int wz = cuboid.min().z() + relZ;
+                var tile = world.getBlockAt(wx, wy, wz).getState(true);
+                com.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
+                tile.update(true);
+            } catch (Exception ignored) {
+            }
         }
     }
 
