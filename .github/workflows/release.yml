@@ -31,18 +31,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          NYX_VERSION=$(grep -oPm1 '(?<=<version>)[0-9]+\.[0-9]+\.[0-9]+' pom.xml)
-          echo "Plugin version: $NYX_VERSION"
+          PLUGIN_VERSION=$(grep -oPm1 '(?<=<version>)[0-9]+\.[0-9]+\.[0-9]+' pom.xml)
+          echo "Plugin version: $PLUGIN_VERSION"
 
           read -r -a vers <<< "${{ inputs.versions }}"
           mapfile -t vers < <(printf '%s\n' "${vers[@]}" | sort -t. -k1,1n -k2,2n -k3,3n)
           last=$(( ${#vers[@]} - 1 ))
           i=0
           for v in "${vers[@]}"; do
-            jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v+1.0.0.jar"
-            if [ "$v" = "1.21.5" ]; then
-              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.21.5+1.0.0.jar"
-            fi
+            jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v+$PLUGIN_VERSION.jar"
 
             if [ ! -f "$jar" ]; then
               echo "::error::Missing built jar: $jar (is $v a valid module?)"
