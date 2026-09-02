@@ -89,7 +89,7 @@ public final class EchoReplayPlugin extends JavaPlugin {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(movementListener);
             movementListener = null;
         }
-        ioExecutor.shutdown();
+        if (ioExecutor != null) ioExecutor.shutdown();
         PacketEventsSetup.onDisable();
         INSTANCE.set(null);
     }

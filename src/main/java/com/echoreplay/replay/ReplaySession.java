@@ -112,9 +112,9 @@ public final class ReplaySession {
         stableToRuntime.clear();
         entityPoses.clear();
         // apply t=0 entity spawns
-        for (TimelineEvent ev : timeline) {
-            if (ev.tickMillis() > 0) break;
-            applyEvent(ev);
+        while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() == 0) {
+            applyEvent(timeline.get(appliedIndex));
+            appliedIndex++;
         }
     }
 
@@ -161,8 +161,9 @@ public final class ReplaySession {
     public void play() {
         started = true;
         stopping = false;
+        appliedIndex = 0;
+        applySnapshot();
         clock.resume();
-        clock.seekTo(clock.mediaTime());
     }
 
     public void stop() {

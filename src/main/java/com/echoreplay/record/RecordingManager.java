@@ -2,7 +2,10 @@ package com.echoreplay.record;
 
 import com.echoreplay.EchoReplayPlugin;
 import com.echoreplay.model.BlockPos;
+import com.echoreplay.model.PlayerSkin;
+import com.echoreplay.model.Rotation;
 import com.echoreplay.model.TimelineEvent;
+import com.echoreplay.model.Vec3d;
 import com.echoreplay.select.Cuboid;
 import com.echoreplay.storage.GzipRecordingWriter;
 import com.echoreplay.storage.RecordingEntry;
@@ -134,7 +137,75 @@ public final class RecordingManager {
     }
 
     private void finishSnapshotAndRecord() {
+        snapshotExistingEntities();
         session.setRecording();
+    }
+
+    private void snapshotExistingEntities() {
+        RecordingSession s = session;
+        if (s == null) return;
+        Cuboid c = s.cuboid();
+        World world = s.world();
+        for (org.bukkit.entity.Entity ent : world.getNearbyEntities(
+                new org.bukkit.Location(world, c.min().x(), c.min().y(), c.min().z()),
+                c.xSize(), c.ySize(), c.zSize())) {
+            if (ent instanceof Player p) {
+                if (p.getWorld().getUID().equals(world.getUID())
+                        && c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) {
+                    int npc = s.npcIdFor(p.getUniqueId());
+                    s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, p.getUniqueId(), p.getName(),
+                            skin(p), pos(p), rot(p), equipment(p), null));
+                }
+            } else {
+                if (ent.getWorld().getUID().equals(world.getUID())
+                        && c.contains(ent.getLocation().getBlockX(), ent.getLocation().getBlockY(), ent.getLocation().getBlockZ())) {
+                    int npc = s.npcIdFor(ent.getUniqueId());
+                    s.emit(new TimelineEvent.EntitySpawn(s.mediaMillis(), npc, ent.getUniqueId(),
+                            ent.getType().getKey().toString(),
+                            new Vec3d(ent.getLocation().x(), ent.getLocation().y(), ent.getLocation().z()),
+                            new Rotation(ent.getLocation().getPitch(), ent.getLocation().getYaw(), ent.getLocation().getYaw()),
+                            null));
+                }
+            }
+        }
+    }
+
+    private static PlayerSkin skin(Player p) {
+        try {
+            com.github.retrooper.packetevents.protocol.player.User user =
+                    com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(p);
+            if (user != null) {
+                var props = user.getProfile().getTextureProperties();
+                for (var prop : props) {
+                    if ("textures".equals(prop.getName())) {
+                        return new PlayerSkin(prop.getValue(),
+                                prop.getSignature() == null ? null : prop.getSignature());
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return new PlayerSkin(null, null);
+    }
+
+    private static Vec3d pos(Player p) {
+        return new Vec3d(p.getLocation().x(), p.getLocation().y(), p.getLocation().z());
+    }
+
+    private static Rotation rot(Player p) {
+        return new Rotation(p.getLocation().getPitch(), p.getLocation().getYaw(), p.getLocation().getYaw());
+    }
+
+    private static List<byte[]> equipment(Player p) {
+        var eq = p.getInventory();
+        return List.of(
+                EquipmentRecorder.serializeItem(eq.getItemInMainHand()),
+                EquipmentRecorder.serializeItem(eq.getItemInOffHand()),
+                EquipmentRecorder.serializeItem(eq.getBoots()),
+                EquipmentRecorder.serializeItem(eq.getLeggings()),
+                EquipmentRecorder.serializeItem(eq.getChestplate()),
+                EquipmentRecorder.serializeItem(eq.getHelmet())
+        );
     }
 
     private void tickRecording() {
