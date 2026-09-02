@@ -47,14 +47,21 @@ public final class RegionDiffRecorder {
         Cuboid c = s.cuboid();
         PalettedStorage last = new PalettedStorage(c.xSize(), c.ySize(), c.zSize());
         // Prime lastSeen from the already-captured initial snapshot so the first
-        // diff pass does not re-emit the whole region as "changes".
+        // diff pass does not re-emit the whole region as "changes". The snapshot
+        // storage stores indices into the *recording* palette, so resolve each
+        // stored index back to a state string via the session palette.
         PalettedStorage snap = s.snapshotStorage();
         if (snap != null) {
             for (int dy = 0; dy < c.ySize(); dy++) {
                 for (int dz = 0; dz < c.zSize(); dz++) {
                     for (int dx = 0; dx < c.xSize(); dx++) {
-                        String st = snap.getState(dx, dy, dz);
-                        last.set(dx, dy, dz, last.ensure(st));
+                        int idx = snap.get(dx, dy, dz);
+                        try {
+                            String st = s.paletteState(idx);
+                            last.set(dx, dy, dz, last.ensure(st));
+                        } catch (Exception ignored) {
+                            last.set(dx, dy, dz, last.ensure("minecraft:air"));
+                        }
                     }
                 }
             }
