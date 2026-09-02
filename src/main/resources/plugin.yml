@@ -1,5 +1,5 @@
 name: EchoReplay
-version: 1.0.0-SNAPSHOT
+version: 1.0.2
 main: com.echoreplay.EchoReplayPlugin
 api-version: '1.21'
 folia-supported: false
