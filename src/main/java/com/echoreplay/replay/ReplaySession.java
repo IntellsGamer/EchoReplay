@@ -278,8 +278,6 @@ public final class ReplaySession {
     }
 
     private void onBlockBreakAnim(TimelineEvent.BlockBreakAnim b) {
-        EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
-                .info("DBG BlockBreakAnim t=" + clock.mediaTime() + " stage=" + b.stage() + " npc=" + b.breakerNpcId());
         Integer runtime = stableToRuntime.get(b.breakerNpcId());
         if (runtime == null) runtime = 0;
         int wx = cuboid.min().x() + b.pos().x();
@@ -308,13 +306,7 @@ public final class ReplaySession {
                     .warning("BlockSet apply failed palette=" + b.paletteIndex() + " size=" + palette.size() + " " + ex);
             return;
         }
-        EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
-                .info("DBG BlockSet t=" + clock.mediaTime() + " @" + wx + "," + wy + "," + wz
-                        + " -> " + data.getAsString(true)
-                        + " (paletteIdx=" + b.paletteIndex() + ")");
-        // Update the actual world block; applyPhysics=true so neighbor updates,
-        // gravity and state broadcast happen (the per-event physics-freeze
-        // handler still cancels any unrecorded cascade inside the cuboid).
+        // Update the actual world block (applyPhysics=true for neighbor updates)
         world.getBlockAt(wx, wy, wz).setBlockData(data, true);
         // Also push the change straight to all viewers so the break/update is
         // guaranteed visible even if the viewer's client didn't get a chunk sync.
