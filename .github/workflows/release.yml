@@ -1,0 +1,53 @@
+name: Publish EchoReplay Release Jar
+
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Plugin version(s) to publish (e.g. 1.0.0 1.0.1). Space-separated. Versions must exist in the pom.'
+        required: false
+        default: '1.0.0'
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build shade jar
+        run: mvn -q -DskipTests clean package
+
+      - name: Publish / update releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PLUGIN_VERSION=$(grep -oPm1 '(?<=<version>)[0-9]+\.[0-9]+\.[0-9]+' pom.xml)
+          echo "Plugin version: $PLUGIN_VERSION"
+
+          jar="$GITHUB_WORKSPACE/target/echoreplay-$PLUGIN_VERSION.jar"
+          if [ ! -f "$jar" ]; then
+            echo "::error::Missing built jar: $jar"
+            exit 1
+          fi
+
+          tag="$PLUGIN_VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag exists -> updating asset with --clobber"
+            gh release upload "$tag" "$jar" --clobber
+            gh release edit "$tag" --latest --draft=false
+          else
+            echo "Creating release $tag"
+            gh release create "$tag" "$jar" --latest \
+              --title "EchoReplay $PLUGIN_VERSION" \
+              --notes "EchoReplay $PLUGIN_VERSION — Server-side region replay plugin for Paper 1.21.4+."
+          fi

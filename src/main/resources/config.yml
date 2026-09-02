@@ -1,0 +1,27 @@
+selection:
+  wand-material: GOLDEN_AXE
+  max-volume: 300000
+  max-horizontal-span: 256
+  outline-particles: true
+recording:
+  margin-blocks: 8
+  flush-seconds: 15
+  capture-chat: true
+  capture-time: true
+  capture-particles: true
+  max-particles-per-second: 400
+  max-duration-minutes: 30
+replay:
+  virtual-packets-only: false
+  force-spectator: true
+  auto-watch-radius: 32
+  backup-live-cuboid: true
+  drive-world-time: false
+  physics-frozen: true
+  skip-sfx-when-speed-above: 2.0
+  default-speed: 1.0
+  snapshot:
+    blocks-per-tick: 8000
+storage:
+  directory: recordings
+  keep-partial-on-crash: true

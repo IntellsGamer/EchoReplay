@@ -1,0 +1,52 @@
+name: EchoReplay
+version: 1.0.0-SNAPSHOT
+main: com.echoreplay.EchoReplayPlugin
+api-version: '1.21'
+folia-supported: false
+description: Server-Side Region Replay for Paper 1.21+
+author: EchoReplay
+website: https://github.com/echoreplay/echoreplay
+
+commands:
+  echoreplay:
+    description: EchoReplay main command
+    usage: /echoreplay <subcommand>
+    aliases: [er, replay]
+  er:
+    description: EchoReplay alias
+    usage: /er <subcommand>
+  replay:
+    description: EchoReplay alias
+    usage: /replay <subcommand>
+
+permissions:
+  echoreplay.use:
+    description: Basic usage
+    default: true
+  echoreplay.wand:
+    description: Use the selection wand
+    default: op
+  echoreplay.select:
+    description: Use selection commands
+    default: op
+  echoreplay.record:
+    description: Record replays
+    default: op
+  echoreplay.play:
+    description: Play replays
+    default: op
+  echoreplay.control:
+    description: Control playback (pause, seek, speed)
+    default: op
+  echoreplay.watch:
+    description: Auto-watch replays
+    default: true
+  echoreplay.delete:
+    description: Delete recordings
+    default: op
+  echoreplay.bypass-limits:
+    description: Bypass selection limits
+    default: op
+  echoreplay.admin:
+    description: Admin commands
+    default: op
