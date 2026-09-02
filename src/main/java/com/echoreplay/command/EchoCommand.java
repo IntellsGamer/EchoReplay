@@ -1,6 +1,7 @@
 package com.echoreplay.command;
 
 import com.echoreplay.EchoReplayPlugin;
+import com.echoreplay.replay.ReplaySession;
 import com.echoreplay.model.BlockPos;
 import com.echoreplay.record.RecordingManager;
 import com.echoreplay.select.Cuboid;
@@ -370,15 +371,23 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
 
     private void seek(CommandSender s, String[] args) {
         if (args.length < 2) {
-            s.sendMessage(Text.mm("<red>Usage: /er seek <seconds|mm:ss></red>"));
+            s.sendMessage(Text.mm("<red>Usage: /er seek <seconds|mm:ss|marker-name></red>"));
+            return;
+        }
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
             return;
         }
         Double sec = parseTime(args[1]);
-        if (sec == null) {
-            s.sendMessage(Text.mm("<red>Invalid time.</red>"));
-            return;
+        if (sec != null) {
+            rep.seekTo(sec * 1000);
+            s.sendMessage(Text.mm("<gray>Seeked to " + args[1] + ".</gray>"));
+        } else {
+            boolean ok = rep.seekToMarker(args[1]);
+            if (ok) s.sendMessage(Text.mm("<gray>Seeked to marker '" + args[1] + "'.</gray>"));
+            else s.sendMessage(Text.mm("<red>Marker or time not found.</red>"));
         }
-        s.sendMessage(Text.mm(plugin.replayManager().seek(sec)));
     }
 
     private void ff(CommandSender s, String[] args) {

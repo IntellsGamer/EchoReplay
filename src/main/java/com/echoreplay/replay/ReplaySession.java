@@ -7,6 +7,7 @@ import com.echoreplay.storage.GzipRecordingReader;
 import com.echoreplay.storage.MetaParser;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
+import com.echoreplay.util.Text;
 import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
@@ -157,6 +158,26 @@ public final class ReplaySession {
      * Seek to a media time by snapshot-reset then fast-applying all events up to
      * target. Backward always resets; forward resets too for simplicity/correctness.
      */
+    /** Seek to a marker by name (or to time if numeric). */
+    public boolean seekToMarker(String nameOrMs) {
+        try {
+            double ms = Double.parseDouble(nameOrMs) * 1000;
+            seekTo(ms);
+            return true;
+        } catch (NumberFormatException e) {
+            // Find marker by name
+            for (TimelineEvent ev : timeline) {
+                if (ev instanceof TimelineEvent.Marker m) {
+                    if (m.name().equals(nameOrMs) || m.name().contains(nameOrMs)) {
+                        seekTo(m.tickMillis());
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     public void seekTo(double targetMs) {
         applySnapshot();
         appliedIndex = 0;
@@ -196,6 +217,10 @@ public final class ReplaySession {
     public void stop() {
         stopping = true;
         started = false;
+        // Notify viewers that playback ended
+        for (Player p : liveViewers()) {
+            p.sendMessage(Text.mm("<gray>Playback ended.</gray>"));
+        }
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
             destroyFor(e.getValue());
         }
