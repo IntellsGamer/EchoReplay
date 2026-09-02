@@ -1,6 +1,6 @@
 name: EchoReplay
 version: 1.0.2
-main: com.echoreplay.EchoReplayPlugin
+main: dev.idebugger.echoreplay.EchoReplayPlugin
 api-version: '1.21'
 folia-supported: false
 description: Server-Side Region Replay for Paper 1.21+
