@@ -21,9 +21,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * EchoReplay main class. Holds all managers, wiring, and a central reference
  * accessible via {@link #get()}.
  */
-public final class EchoReplayPlugin extends JavaPlugin {
+public final class EchoReplay extends JavaPlugin {
 
-    private static final AtomicReference<EchoReplayPlugin> INSTANCE = new AtomicReference<>();
+    private static final AtomicReference<EchoReplay> INSTANCE = new AtomicReference<>();
 
     private final SelectionManager selectionManager = new SelectionManager();
     private final RecordingIndex recordingIndex = new RecordingIndex(new File(getDataFolder(), "recordings/index.yml"));
@@ -34,7 +34,7 @@ public final class EchoReplayPlugin extends JavaPlugin {
     private int tickTaskId = -1;
     private com.github.retrooper.packetevents.event.PacketListenerCommon movementListener;
 
-    public static EchoReplayPlugin get() {
+    public static EchoReplay get() {
         return INSTANCE.get();
     }
 

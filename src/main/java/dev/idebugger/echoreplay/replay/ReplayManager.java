@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.replay;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.select.Cuboid;
 import dev.idebugger.echoreplay.storage.GzipRecordingReader;
 import dev.idebugger.echoreplay.storage.MetaParser;
@@ -27,11 +27,11 @@ import java.util.UUID;
  */
 public final class ReplayManager implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private ReplaySession session;
     private boolean physicsFrozen = false;
 
-    public ReplayManager(EchoReplayPlugin plugin) {
+    public ReplayManager(EchoReplay plugin) {
         this.plugin = plugin;
     }
 
@@ -39,7 +39,7 @@ public final class ReplayManager implements Listener {
         physicsFrozen = config.getBoolean("replay.physics-frozen", true);
     }
 
-    public void registerListeners(EchoReplayPlugin p) {
+    public void registerListeners(EchoReplay p) {
         p.getServer().getPluginManager().registerEvents(this, p);
     }
 

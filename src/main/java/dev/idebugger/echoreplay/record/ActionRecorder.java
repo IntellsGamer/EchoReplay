@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -21,9 +21,9 @@ import org.bukkit.inventory.EquipmentSlot;
  */
 public final class ActionRecorder implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public ActionRecorder(EchoReplayPlugin plugin) {
+    public ActionRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

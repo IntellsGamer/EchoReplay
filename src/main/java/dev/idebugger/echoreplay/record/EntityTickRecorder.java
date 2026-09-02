@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.Rotation;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.model.Vec3d;
@@ -33,12 +33,12 @@ public final class EntityTickRecorder {
     private static final int FLAG_SPRINTING = 0x04;
     private static final int FLAG_SWIMMING = 0x08;
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private final Map<java.util.UUID, EntityPose> lastKnown = new HashMap<>();
     private final Map<UUID, Integer> lastPose = new HashMap<>();
     private final Map<UUID, Integer> lastFlags = new HashMap<>();
 
-    public EntityTickRecorder(EchoReplayPlugin plugin) {
+    public EntityTickRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

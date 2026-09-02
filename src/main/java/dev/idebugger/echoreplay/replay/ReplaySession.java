@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.replay;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
 import dev.idebugger.echoreplay.storage.GzipRecordingReader;
@@ -28,7 +28,7 @@ import java.util.UUID;
  */
 public final class ReplaySession {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private final String name;
     private final World world;
     private final Cuboid cuboid;
@@ -71,7 +71,7 @@ public final class ReplaySession {
 
     record EntityPose(dev.idebugger.echoreplay.model.Vec3d pos, dev.idebugger.echoreplay.model.Rotation rot) {}
 
-    public ReplaySession(EchoReplayPlugin plugin, String name, World world, boolean virtual,
+    public ReplaySession(EchoReplay plugin, String name, World world, boolean virtual,
                          GzipRecordingReader reader, MetaParser.Parsed meta) {
         this.plugin = plugin;
         this.name = name;
@@ -302,7 +302,7 @@ public final class ReplaySession {
             String state = palette.get(b.paletteIndex());
             data = Bukkit.createBlockData(state);
         } catch (Exception ex) {
-            EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+            EchoReplay.getPlugin(EchoReplay.class).getLogger()
                     .warning("BlockSet apply failed palette=" + b.paletteIndex() + " size=" + palette.size() + " " + ex);
             return;
         }

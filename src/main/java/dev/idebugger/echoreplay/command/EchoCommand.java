@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.command;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.replay.ReplaySession;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.record.RecordingManager;
@@ -30,12 +30,12 @@ import java.util.List;
  */
 public final class EchoCommand implements CommandExecutor, TabCompleter {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private static final NamespacedKey WAND_KEY =
             NamespacedKey.fromString("echoreplay:wand");
     private static final Material WAND_MATERIAL = Material.GOLDEN_AXE;
 
-    public EchoCommand(EchoReplayPlugin plugin) {
+    public EchoCommand(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.command;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.select.Selection;
 import dev.idebugger.echoreplay.util.Text;
@@ -24,9 +24,9 @@ public final class WandListener implements Listener {
 
     private static final NamespacedKey WAND_KEY = NamespacedKey.fromString("echoreplay:wand");
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public WandListener(EchoReplayPlugin plugin) {
+    public WandListener(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

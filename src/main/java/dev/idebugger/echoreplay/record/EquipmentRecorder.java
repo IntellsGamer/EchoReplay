@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
@@ -26,10 +26,10 @@ import java.util.Set;
  */
 public final class EquipmentRecorder implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private final Set<String> lastEquipmentKeys = new HashSet<>();
 
-    public EquipmentRecorder(EchoReplayPlugin plugin) {
+    public EquipmentRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

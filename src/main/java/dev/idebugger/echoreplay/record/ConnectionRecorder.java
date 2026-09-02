@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.PlayerSkin;
 import dev.idebugger.echoreplay.model.Rotation;
 import dev.idebugger.echoreplay.model.TimelineEvent;
@@ -22,9 +22,9 @@ import java.util.List;
  */
 public final class ConnectionRecorder implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public ConnectionRecorder(EchoReplayPlugin plugin) {
+    public ConnectionRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

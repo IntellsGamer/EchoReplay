@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class RegionDiffRecorder {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private final AtomicReference<RecordingSession> current = new AtomicReference<>();
     private final Map<Long, byte[]> lastSeen = new ConcurrentHashMap<>();
     private volatile boolean active = false;
@@ -44,7 +44,7 @@ public final class RegionDiffRecorder {
     private ScheduledFuture<?> task;
     private final long passDelayMs;
 
-    public RegionDiffRecorder(EchoReplayPlugin plugin) {
+    public RegionDiffRecorder(EchoReplay plugin) {
         this.plugin = plugin;
         this.passDelayMs = 50; // ~every 2.5 server ticks; full scan each pass
     }
@@ -101,7 +101,7 @@ public final class RegionDiffRecorder {
         try {
             scanAsync(s);
         } catch (Throwable t) {
-            EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+            EchoReplay.getPlugin(EchoReplay.class).getLogger()
                     .warning("RegionDiff async pass error: " + t);
         }
     }
@@ -168,7 +168,7 @@ public final class RegionDiffRecorder {
     private void enqueueEmit(RecordingSession s, int x, int y, int z, String state) {
         pending.add(new Pending(s, x, y, z, state));
         // Schedule one main-thread flush for this burst of emissions.
-        EchoReplayPlugin.getPlugin(EchoReplayPlugin.class)
+        EchoReplay.getPlugin(EchoReplay.class)
                 .getServer().getScheduler().runTask(plugin, this::flushPendingMainThread);
     }
 
@@ -178,7 +178,7 @@ public final class RegionDiffRecorder {
             try {
                 emit(p.s(), p.x(), p.y(), p.z(), p.state());
             } catch (Throwable t) {
-                EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+                EchoReplay.getPlugin(EchoReplay.class).getLogger()
                         .warning("RegionDiff emit error: " + t);
             }
         }
@@ -292,7 +292,7 @@ public final class RegionDiffRecorder {
         /** Log which reflective accessors resolved, for debugging on live setups. */
         static void logState() {
             resolve();
-            EchoReplayPlugin.getPlugin(EchoReplayPlugin.class).getLogger()
+            EchoReplay.getPlugin(EchoReplay.class).getLogger()
                     .info("RegionDiff NMS resolver: world=" + (worldGetChunk != null ? worldGetChunk.getDeclaringClass().getSimpleName()
                             + "." + worldGetChunk.getName() : "none")
                             + " chunkBlockState=" + (chunkGetBlockState != null ? chunkGetBlockState.getName() : "none")

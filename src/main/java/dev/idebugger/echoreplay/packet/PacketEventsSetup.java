@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.packet;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import com.github.retrooper.packetevents.PacketEvents;
 import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 
@@ -11,7 +11,7 @@ public final class PacketEventsSetup {
 
     private PacketEventsSetup() {}
 
-    public static void onLoad(EchoReplayPlugin plugin) {
+    public static void onLoad(EchoReplay plugin) {
         PacketEvents.setAPI(SpigotPacketEventsBuilder.build(plugin));
         PacketEvents.getAPI()
                 .getSettings()

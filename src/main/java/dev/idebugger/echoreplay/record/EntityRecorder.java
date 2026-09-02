@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.EntitySnapshot;
 import dev.idebugger.echoreplay.model.Rotation;
 import dev.idebugger.echoreplay.model.TimelineEvent;
@@ -20,9 +20,9 @@ import org.bukkit.event.entity.EntityRemoveEvent;
  */
 public final class EntityRecorder implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public EntityRecorder(EchoReplayPlugin plugin) {
+    public EntityRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

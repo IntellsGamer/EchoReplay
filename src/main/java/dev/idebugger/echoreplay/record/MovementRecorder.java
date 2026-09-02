@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.Rotation;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.model.Vec3d;
@@ -17,9 +17,9 @@ import org.bukkit.entity.Player;
  */
 public final class MovementRecorder extends PacketListenerAbstract {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public MovementRecorder(EchoReplayPlugin plugin) {
+    public MovementRecorder(EchoReplay plugin) {
         super(PacketListenerPriority.HIGH);
         this.plugin = plugin;
     }

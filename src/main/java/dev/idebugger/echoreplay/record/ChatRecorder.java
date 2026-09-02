@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
 import io.papermc.paper.event.player.AsyncChatEvent;
@@ -16,9 +16,9 @@ import org.bukkit.event.Listener;
  */
 public final class ChatRecorder implements Listener {
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
 
-    public ChatRecorder(EchoReplayPlugin plugin) {
+    public ChatRecorder(EchoReplay plugin) {
         this.plugin = plugin;
     }
 

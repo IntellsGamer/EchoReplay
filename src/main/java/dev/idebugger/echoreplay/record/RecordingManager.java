@@ -1,6 +1,6 @@
 package dev.idebugger.echoreplay.record;
 
-import dev.idebugger.echoreplay.EchoReplayPlugin;
+import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.model.PlayerSkin;
 import dev.idebugger.echoreplay.model.Rotation;
@@ -37,7 +37,7 @@ public final class RecordingManager {
 
     private static final Pattern NAME = Pattern.compile("[a-zA-Z0-9_\\-]{1,32}");
 
-    private final EchoReplayPlugin plugin;
+    private final EchoReplay plugin;
     private RecordingSession session;
     private File recordingsDir;
     private int marginBlocks = 8;
@@ -52,7 +52,7 @@ public final class RecordingManager {
     private final EntityTickRecorder entityTickRecorder;
     private final RegionDiffRecorder regionDiffRecorder;
 
-    public RecordingManager(EchoReplayPlugin plugin) {
+    public RecordingManager(EchoReplay plugin) {
         this.plugin = plugin;
         this.equipmentRecorder = new EquipmentRecorder(plugin);
         this.entityTickRecorder = new EntityTickRecorder(plugin);
@@ -69,7 +69,7 @@ public final class RecordingManager {
         regionDiffRecorder.configure(config.getInt("recording.scan-interval-ticks", 20));
     }
 
-    public void registerListeners(EchoReplayPlugin p) {
+    public void registerListeners(EchoReplay p) {
         p.getServer().getPluginManager().registerEvents(new WorldRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new ConnectionRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new EntityRecorder(p), p);
