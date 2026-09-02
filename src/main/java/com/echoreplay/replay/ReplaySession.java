@@ -443,7 +443,7 @@ public final class ReplaySession {
         return com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.STANDING;
     }
 
-    /** Build and broadcast the merged stance metadata (flags + pose + eye height). */
+    /** Build and broadcast the merged stance metadata (flags + pose). */
     private void pushStance(int runtime) {
         byte flags = runtimeFlags.getOrDefault(runtime, (byte) 0);
         com.github.retrooper.packetevents.protocol.entity.pose.EntityPose pose =
@@ -452,9 +452,9 @@ public final class ReplaySession {
         java.util.List<EntityData<?>> data = new ArrayList<>();
         data.add(new EntityData<>(0, EntityDataTypes.BYTE, flags));
         data.add(new EntityData<>(6, EntityDataTypes.ENTITY_POSE, pose));
-        boolean crouched = (flags & 0x02) != 0;
-        float eye = crouched ? 1.54f : 1.62f;
-        data.add(new EntityData<>(8, EntityDataTypes.FLOAT, eye));
+        // NOTE: only base indices 0 and 6 are sent. Do NOT add an eye-height /
+        // other-index entry here: non-standard metadata indices for some entity
+        // types cause the client to fail decoding -> Network Protocol Error kick.
         for (Player p : liveViewers()) {
             fakes.setMetadata(p, runtime, data);
         }

@@ -112,27 +112,26 @@ public final class EntityTickRecorder {
 
     /** Detect and emit POSE / SNEAK_SPRINT for the entity's current stance. */
     private void captureStance(RecordingSession s, UUID uuid, Entity e) {
+        // Only living entities have pose / flag metadata accessors. Non-living
+        // entities (items, projectiles, vehicles) must be excluded, otherwise
+        // sending pose metadata to them on replay causes Network Protocol Errors.
+        if (!(e instanceof org.bukkit.entity.LivingEntity le)) return;
         int pose = 0; // STANDING
         int flags = 0;
-        if (e instanceof org.bukkit.entity.LivingEntity le) {
-            if (le.isGliding()) {
-                pose = 1; // FALL_FLYING
-            } else if (le.isSwimming() || e.isInWater()) {
-                pose = 3; // SWIMMING
-            }
-            if (le.isSneaking()) {
-                flags |= FLAG_CROUCHED;
-                if (pose == 0) pose = 5; // CROUCHING
-            }
-            if (le.isInWater() || le.isSwimming()) {
-                flags |= FLAG_SWIMMING;
-            }
-            if (e instanceof Player p && p.isSprinting()) {
-                flags |= FLAG_SPRINTING;
-            }
-        } else if (e.isInWater()) {
+        if (le.isGliding()) {
+            pose = 1; // FALL_FLYING
+        } else if (le.isSwimming() || e.isInWater()) {
             pose = 3; // SWIMMING
+        }
+        if (le.isSneaking()) {
+            flags |= FLAG_CROUCHED;
+            if (pose == 0) pose = 5; // CROUCHING
+        }
+        if (le.isInWater() || le.isSwimming()) {
             flags |= FLAG_SWIMMING;
+        }
+        if (e instanceof Player p && p.isSprinting()) {
+            flags |= FLAG_SPRINTING;
         }
 
         int npc = s.npcIdFor(uuid);
