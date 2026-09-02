@@ -41,7 +41,7 @@ jobs:
           for v in "${vers[@]}"; do
             jar="$GITHUB_WORKSPACE/$v/target/echoreplay-$v+1.0.0.jar"
             if [ "$v" = "1.21.5" ]; then
-              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.21.5+1.0.0-SNAPSHOT.jar"
+              jar="$GITHUB_WORKSPACE/$v/target/echoreplay-1.21.5+1.0.0.jar"
             fi
 
             if [ ! -f "$jar" ]; then
