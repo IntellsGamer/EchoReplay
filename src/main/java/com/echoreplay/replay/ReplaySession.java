@@ -190,6 +190,7 @@ public final class ReplaySession {
         switch (ev) {
             case TimelineEvent.BlockSet b -> applyBlockSet(b);
             case TimelineEvent.MultiBlock m -> m.blocks().forEach(this::applyBlockSet);
+            case TimelineEvent.BlockBreakAnim b -> onBlockBreakAnim(b);
             case TimelineEvent.PlayerSpawn s -> onPlayerSpawn(s);
             case TimelineEvent.EntitySpawn s -> onEntitySpawn(s);
             case TimelineEvent.PlayerLeave l -> despawn(l.npcId());
@@ -206,6 +207,21 @@ public final class ReplaySession {
         }
     }
 
+    private void onBlockBreakAnim(TimelineEvent.BlockBreakAnim b) {
+        Integer runtime = stableToRuntime.get(b.breakerNpcId());
+        if (runtime == null) runtime = 0;
+        int wx = cuboid.min().x() + b.pos().x();
+        int wy = cuboid.min().y() + b.pos().y();
+        int wz = cuboid.min().z() + b.pos().z();
+        var pkt = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockBreakAnimation(
+                runtime, new com.github.retrooper.packetevents.util.Vector3i(wx, wy, wz),
+                (byte) (b.stage() & 0xFF));
+        for (Player p : liveViewers()) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                    .sendPacket(p, pkt);
+        }
+    }
+
     private void applyBlockSet(TimelineEvent.BlockSet b) {
         if (virtual) return; // virtual-write path is a TODO note: viewer-only overlay
         int wx = cuboid.min().x() + b.pos().x();
@@ -214,6 +230,16 @@ public final class ReplaySession {
         String state = palette.get(b.paletteIndex());
         BlockData data = Bukkit.createBlockData(state);
         world.getBlockAt(wx, wy, wz).setBlockData(data, false);
+        // Also push the change straight to viewers via block change packets so
+        // the client sees it even if a chunk resync or physics event interferes.
+        var change = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange(
+                new com.github.retrooper.packetevents.util.Vector3i(wx, wy, wz), 0);
+        change.setBlockState(
+                io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitBlockData(data));
+        for (Player p : liveViewers()) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                    .sendPacket(p, change);
+        }
     }
 
     private void onPlayerSpawn(TimelineEvent.PlayerSpawn s) {

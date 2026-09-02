@@ -61,6 +61,21 @@ public final class WorldRecorder implements Listener {
     public void onBreak(BlockBreakEvent e) { recordBlock(e.getBlock().getLocation()); }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onBreakAnim(org.bukkit.event.block.BlockDamageEvent e) {
+        RecordingSession s = session();
+        if (s == null || s.state() != RecordingSession.State.RECORDING) return;
+        if (!e.getBlock().getWorld().getUID().equals(s.world().getUID())) return;
+        Cuboid c = s.cuboid();
+        var loc = e.getBlock().getLocation();
+        if (c.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            int npc = e.getPlayer() == null ? 0 : s.npcIdFor(e.getPlayer().getUniqueId());
+            s.emit(new TimelineEvent.BlockBreakAnim(s.mediaMillis(),
+                    new BlockPos(loc.getBlockX() - c.min().x(), loc.getBlockY() - c.min().y(), loc.getBlockZ() - c.min().z()),
+                    npc, 1));
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onGrow(BlockGrowEvent e) { recordBlock(e.getBlock().getLocation()); }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

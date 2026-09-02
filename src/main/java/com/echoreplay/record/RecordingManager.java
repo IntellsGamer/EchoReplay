@@ -49,10 +49,12 @@ public final class RecordingManager {
     private int pendingIndex = 0;
     private long flushCounterMs = 0;
     private final EquipmentRecorder equipmentRecorder;
+    private final EntityTickRecorder entityTickRecorder;
 
     public RecordingManager(EchoReplayPlugin plugin) {
         this.plugin = plugin;
         this.equipmentRecorder = new EquipmentRecorder(plugin);
+        this.entityTickRecorder = new EntityTickRecorder(plugin);
     }
 
     public void onEnable(FileConfiguration config) {
@@ -137,6 +139,7 @@ public final class RecordingManager {
     }
 
     private void finishSnapshotAndRecord() {
+        entityTickRecorder.reset();
         snapshotExistingEntities();
         session.setRecording();
     }
@@ -146,26 +149,12 @@ public final class RecordingManager {
         if (s == null) return;
         Cuboid c = s.cuboid();
         World world = s.world();
-        for (org.bukkit.entity.Entity ent : world.getNearbyEntities(
-                new org.bukkit.Location(world, c.min().x(), c.min().y(), c.min().z()),
-                c.xSize(), c.ySize(), c.zSize())) {
-            if (ent instanceof Player p) {
-                if (p.getWorld().getUID().equals(world.getUID())
-                        && c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) {
-                    int npc = s.npcIdFor(p.getUniqueId());
-                    s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, p.getUniqueId(), p.getName(),
-                            skin(p), pos(p), rot(p), equipment(p), null));
-                }
-            } else {
-                if (ent.getWorld().getUID().equals(world.getUID())
-                        && c.contains(ent.getLocation().getBlockX(), ent.getLocation().getBlockY(), ent.getLocation().getBlockZ())) {
-                    int npc = s.npcIdFor(ent.getUniqueId());
-                    s.emit(new TimelineEvent.EntitySpawn(s.mediaMillis(), npc, ent.getUniqueId(),
-                            ent.getType().getKey().toString(),
-                            new Vec3d(ent.getLocation().x(), ent.getLocation().y(), ent.getLocation().z()),
-                            new Rotation(ent.getLocation().getPitch(), ent.getLocation().getYaw(), ent.getLocation().getYaw()),
-                            null));
-                }
+        for (Player p : world.getPlayers()) {
+            if (p.getWorld().getUID().equals(world.getUID())
+                    && c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) {
+                int npc = s.npcIdFor(p.getUniqueId());
+                s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, p.getUniqueId(), p.getName(),
+                        skin(p), pos(p), rot(p), equipment(p), null));
             }
         }
     }
@@ -211,6 +200,7 @@ public final class RecordingManager {
     private void tickRecording() {
         session.advanceClock(50);
         equipmentRecorder.tick();
+        entityTickRecorder.tick();
         flushCounterMs += 50;
         if (flushCounterMs >= flushSeconds * 1000L) {
             flushCounterMs = 0;
