@@ -95,25 +95,33 @@ public final class ReplayManager implements Listener {
         if (!file.exists()) {
             return "<red>No recording named '" + name + "'.</red>";
         }
+        // Everything heavy (gzip inflate, timeline decode + sort, header
+        // parse) runs on the IO thread. The main thread only does cheap
+        // session assembly. Decoding the full timeline on the main thread
+        // froze ticks for 10s+ and OOMed on large recordings.
         java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
-                return GzipRecordingReader.read(new java.io.BufferedInputStream(new java.io.FileInputStream(file)));
+                GzipRecordingReader reader;
+                try (java.io.InputStream fis = new java.io.BufferedInputStream(new java.io.FileInputStream(file))) {
+                    reader = GzipRecordingReader.read(fis);
+                }
+                if (reader == null) return null;
+                java.util.List<dev.idebugger.echoreplay.model.TimelineEvent> timeline = reader.timeline();
+                reader.releaseFragments();
+                MetaParser.Parsed meta = MetaParser.parse(reader.meta());
+                return new DecodedRecording(reader.palette(), reader.blockData(),
+                        reader.blockSizeX(), reader.blockSizeY(), reader.blockSizeZ(),
+                        reader.blockNbt(), timeline, meta);
             } catch (Exception e) {
                 return null;
             }
-        }, plugin.ioExecutor()).thenAccept(reader -> {
-            if (reader == null) {
+        }, plugin.ioExecutor()).thenAccept(decoded -> {
+            if (decoded == null || decoded.meta() == null) {
                 if (sender != null) sender.sendMessage(Text.mm("<red>Failed to read recording.</red>"));
                 return;
             }
             plugin.getServer().getScheduler().runTask(plugin, () -> {
-                MetaParser.Parsed meta;
-                try {
-                    meta = MetaParser.parse(reader.meta());
-                } catch (Exception e) {
-                    if (sender != null) sender.sendMessage(Text.mm("<red>Corrupt recording header.</red>"));
-                    return;
-                }
+                MetaParser.Parsed meta = decoded.meta();
                 World world = plugin.getServer().getWorld(meta.worldUuid());
                 if (world == null) world = plugin.getServer().getWorld(meta.worldName());
                 if (world == null) {
@@ -121,7 +129,7 @@ public final class ReplayManager implements Listener {
                     return;
                 }
                 boolean virtual = forceVirtual || plugin.cfg().getBoolean("replay.virtual-packets-only", false);
-                session = new ReplaySession(plugin, name, world, virtual, reader, meta);
+                session = new ReplaySession(plugin, name, world, virtual, decoded);
                 // record snapshot restore (world mode) is applied within session
                 if (sender != null && sender.isOnline()) {
                     session.addViewer(sender);

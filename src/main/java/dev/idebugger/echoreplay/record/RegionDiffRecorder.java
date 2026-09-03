@@ -43,10 +43,17 @@ public final class RegionDiffRecorder {
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> task;
     private final long passDelayMs;
+    // Resumable sweep cursor: linear cell index into the cuboid volume.
+    // Each pass processes cells until the millisecond budget is exhausted,
+    // then resumes here next pass, so arbitrarily large regions stream
+    // without hogging CPU (previously a full unconstrained scan per pass,
+    // which saturated small servers and tanked TPS while recording).
+    private int scanCursor = 0;
+    private long scanBudgetNanos = 12_000_000L;
 
     public RegionDiffRecorder(EchoReplay plugin) {
         this.plugin = plugin;
-        this.passDelayMs = 50; // ~every 2.5 server ticks; full scan each pass
+        this.passDelayMs = 50; // ~every 2.5 server ticks; budgeted slice each pass
     }
 
     public void configure(int ignoredIntervalTicks) {
@@ -60,6 +67,15 @@ public final class RegionDiffRecorder {
     public void reset(RecordingSession s) {
         current.set(s);
         lastSeen.clear();
+        scanCursor = 0;
+        long ms = 12L;
+        try {
+            ms = plugin.cfg().getLong("recording.scan-ms-per-pass", 12L);
+        } catch (Exception ignored) {
+        }
+        if (ms < 1) ms = 1;
+        if (ms > 40) ms = 40;
+        scanBudgetNanos = ms * 1_000_000L;
         active = true;
         if (executor == null || executor.isShutdown()) {
             executor = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -113,43 +129,49 @@ public final class RegionDiffRecorder {
             active = false; // NMS unavailable -> disable gracefully
             return;
         }
-        int minCX = Math.floorDiv(c.min().x(), 16);
-        int maxCX = Math.floorDiv(c.max().x(), 16);
-        int minCZ = Math.floorDiv(c.min().z(), 16);
-        int maxCZ = Math.floorDiv(c.max().z(), 16);
-        int yMin = c.min().y(), yMax = c.max().y();
-        for (int cx = minCX; cx <= maxCX; cx++) {
-            for (int cz = minCZ; cz <= maxCZ; cz++) {
-                Object chunk = Nms.chunk(handle, cx, cz);
-                if (chunk == null) continue;
-                int x0 = Math.max(c.min().x(), cx * 16);
-                int x1 = Math.min(c.max().x(), cx * 16 + 15);
-                int z0 = Math.max(c.min().z(), cz * 16);
-                int z1 = Math.min(c.max().z(), cz * 16 + 15);
-                for (int x = x0; x <= x1; x++) {
-                    int lx = x & 15;
-                    for (int z = z0; z <= z1; z++) {
-                        int lz = z & 15;
-                        long baseKey = (long) x << 40 | (long) z << 20;
-                        for (int y = yMin; y <= yMax; y++) {
-                            Object state = Nms.blockState(chunk, lx, y, lz);
-                            String str = Nms.toStringSafe(state);
-                            long key = baseKey | (y & 0xFFFFF);
-                            byte[] enc = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                            byte[] prev = lastSeen.get(key);
-                            if (prev == null) {
-                                // First observation of this cell -> establish the
-                                // baseline (this pass) without emitting, so the diff
-                                // only reports genuine changes from now on.
-                                lastSeen.put(key, enc);
-                            } else if (!java.util.Arrays.equals(prev, enc)) {
-                                lastSeen.put(key, enc);
-                                enqueueEmit(s, x, y, z, str);
-                            }
-                        }
-                    }
-                }
+        int minX = c.min().x(), minY = c.min().y(), minZ = c.min().z();
+        int sx = c.max().x() - minX + 1;
+        int sy = c.max().y() - minY + 1;
+        int sz = c.max().z() - minZ + 1;
+        long vol = (long) sx * sy * sz;
+        if (vol <= 0 || vol > Integer.MAX_VALUE) {
+            return;
+        }
+        if (scanCursor < 0 || (long) scanCursor >= vol) scanCursor = 0;
+        long deadline = System.nanoTime() + scanBudgetNanos;
+        // Chunk cache: cells are visited in x/z-major order so consecutive
+        // cells usually share a chunk; re-fetch only on chunk change.
+        int curCX = Integer.MIN_VALUE, curCZ = Integer.MIN_VALUE;
+        Object chunk = null;
+        int n = 0;
+        while ((long) scanCursor < vol) {
+            int i = scanCursor++;
+            int dx = i % sx;
+            int dz = (i / sx) % sz;
+            int dy = i / (sx * sz);
+            int x = minX + dx, y = minY + dy, z = minZ + dz;
+            int cx = Math.floorDiv(x, 16), cz = Math.floorDiv(z, 16);
+            if (cx != curCX || cz != curCZ) {
+                chunk = Nms.chunk(handle, cx, cz);
+                curCX = cx;
+                curCZ = cz;
             }
+            if (chunk == null) continue;
+            Object state = Nms.blockState(chunk, x & 15, y, z & 15);
+            String str = Nms.toStringSafe(state);
+            long key = ((long) x << 40) | ((long) z << 20) | (y & 0xFFFFF);
+            byte[] enc = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] prev = lastSeen.get(key);
+            if (prev == null) {
+                // First observation of this cell -> establish the
+                // baseline (this pass) without emitting, so the diff
+                // only reports genuine changes from now on.
+                lastSeen.put(key, enc);
+            } else if (!java.util.Arrays.equals(prev, enc)) {
+                lastSeen.put(key, enc);
+                enqueueEmit(s, x, y, z, str);
+            }
+            if ((++n & 1023) == 0 && System.nanoTime() >= deadline) break;
         }
     }
 

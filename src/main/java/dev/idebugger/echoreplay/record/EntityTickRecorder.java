@@ -36,15 +36,26 @@ public final class EntityTickRecorder {
     private static final int FLAG_SPRINTING = 0x08;
     private static final int FLAG_SWIMMING = 0x10;
 
+    private static final double POS_EPS = 1e-4;
+
     private final EchoReplay plugin;
     private final Map<java.util.UUID, EntityPose> lastKnown = new HashMap<>();
     private final Map<UUID, Integer> lastPose = new HashMap<>();
     private final Map<UUID, Integer> lastFlags = new HashMap<>();
     private final Map<UUID, org.bukkit.util.Vector> lastVel = new HashMap<>();
     private final Map<java.util.UUID, EntityPose> lastPlayerSeen = new HashMap<>();
+    // UUIDs currently inside the recording cuboid, maintained on the main
+    // thread. Read lock-free from Netty threads (movement dedup gate).
+    private final java.util.Set<UUID> inRegion =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public EntityTickRecorder(EchoReplay plugin) {
         this.plugin = plugin;
+    }
+
+    /** Lock-free membership test for packet threads (no Bukkit calls). */
+    public boolean isInRegion(UUID uuid) {
+        return uuid != null && inRegion.contains(uuid);
     }
 
     record EntityPose(Vec3d pos, Rotation rot) {}
@@ -62,20 +73,29 @@ public final class EntityTickRecorder {
         // LEAVE for mobs that were tracked but vanished from the region.
         Map<java.util.UUID, EntityPose> observed = new HashMap<>();
 
+        // Centered box with exact half-extents: the old call passed full
+        // sizes as radii from the min corner, scanning 8x the volume and
+        // recording entities far outside the cuboid.
+        double cx = (c.min().x() + c.max().x()) / 2.0;
+        double cy = (c.min().y() + c.max().y()) / 2.0;
+        double cz = (c.min().z() + c.max().z()) / 2.0;
         for (Entity e : world.getNearbyEntities(
-                new Location(world, c.min().x(), c.min().y(), c.min().z()),
-                c.xSize(), c.ySize(), c.zSize())) {
+                new Location(world, cx, cy, cz),
+                c.xSize() / 2.0 + 1, c.ySize() / 2.0 + 1, c.zSize() / 2.0 + 1)) {
             boolean isPlayer = e instanceof Player;
             UUID uuid = e.getUniqueId();
+            Location loc = e.getLocation();
+            if (!c.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) continue;
+            inRegion.add(uuid);
 
             // Pose / stance capture applies to everyone (players + mobs).
             captureStance(s, uuid, e);
 
-            double x = e.getLocation().getX();
-            double y = e.getLocation().getY();
-            double z = e.getLocation().getZ();
-            float yaw = e.getLocation().getYaw();
-            float pitch = e.getLocation().getPitch();
+            double x = loc.getX();
+            double y = loc.getY();
+            double z = loc.getZ();
+            float yaw = loc.getYaw();
+            float pitch = loc.getPitch();
             Vec3d pos = new Vec3d(x, y, z);
             Rotation rot = new Rotation(pitch, yaw, yaw);
             observed.put(uuid, new EntityPose(pos, rot));
@@ -140,6 +160,7 @@ public final class EntityTickRecorder {
                     long t = s.mediaMillis();
                     s.emit(new TimelineEvent.EntityLeave(t, npc));
                     it.remove();
+                    inRegion.remove(en.getKey());
                     lastVel.remove(en.getKey());
                     lastPose.remove(en.getKey());
                     lastFlags.remove(en.getKey());
@@ -158,6 +179,7 @@ public final class EntityTickRecorder {
                     s.emit(new TimelineEvent.PlayerLeave(t, npc, 1));
                     s.unmarkEntitySpawned(en.getKey());
                     it.remove();
+                    inRegion.remove(en.getKey());
                 }
             }
         }
@@ -211,5 +233,6 @@ public final class EntityTickRecorder {
         lastFlags.clear();
         lastVel.clear();
         lastPlayerSeen.clear();
+        inRegion.clear();
     }
 }

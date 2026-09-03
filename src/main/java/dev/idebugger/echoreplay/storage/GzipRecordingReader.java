@@ -109,6 +109,14 @@ public final class GzipRecordingReader {
         return out;
     }
 
+    /**
+     * Drop the raw timeline fragment bytes after decoding. Halves peak memory
+     * on large recordings (fragments + decoded objects otherwise coexist).
+     */
+    public void releaseFragments() {
+        timelineFragments.clear();
+    }
+
     private static List<String> parsePalette(byte[] body) throws IOException {
         Io.LeIn in = Io.leIn(body);
         int count = in.readInt();

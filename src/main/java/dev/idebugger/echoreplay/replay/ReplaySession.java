@@ -3,8 +3,6 @@ package dev.idebugger.echoreplay.replay;
 import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
-import dev.idebugger.echoreplay.storage.GzipRecordingReader;
-import dev.idebugger.echoreplay.storage.MetaParser;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
 import dev.idebugger.echoreplay.util.Text;
@@ -81,11 +79,14 @@ public final class ReplaySession {
     // the dominant per-tick cost during busy playbacks.
     private List<Player> tickViewers = new ArrayList<>();
 
-    // Palette strings parsed once into BlockData (+ packet block states).
-    // Bukkit.createBlockData parses text every call; recordings replay the
-    // same handful of states thousands of times.
-    private final List<BlockData> paletteData;
-    private final List<Object> paletteStates;
+    // Palette strings parsed lazily into BlockData (+ packet block states)
+    // and cached per index. Bukkit.createBlockData parses text on every call;
+    // recordings replay the same handful of states thousands of times, and
+    // parsing the whole palette upfront stalls /er play on large recordings.
+    // All access is main-thread only (playback tick), so plain HashMaps do.
+    private final Map<Integer, BlockData> blockDataCache = new HashMap<>();
+    private final Map<Integer, Object> packetStateCache = new HashMap<>();
+    private final Map<Integer, BlockData> liveDataCache = new HashMap<>();
     private final Set<Integer> warnedBadPalette = new HashSet<>();
 
     // Region streaming phases: CAPTURE/SNAPSHOT/RESTORE walk the cuboid with
@@ -102,7 +103,6 @@ public final class ReplaySession {
     // Live-terrain capture build state (world mode only).
     private java.util.Map<String, Integer> capturePalIdx;
     private java.util.List<String> capturePal;
-    private java.util.List<BlockData> liveBlockData;
 
     // Metadata index-0 entity-flag bits we are allowed to transmit. Everything
     // else (0x01 fire, 0x20 invisible, 0x40 glow, 0x80 elytra) is masked out.
@@ -120,39 +120,21 @@ public final class ReplaySession {
     record EntityPose(dev.idebugger.echoreplay.model.Vec3d pos, dev.idebugger.echoreplay.model.Rotation rot) {}
 
     public ReplaySession(EchoReplay plugin, String name, World world, boolean virtual,
-                         GzipRecordingReader reader, MetaParser.Parsed meta) {
+                         DecodedRecording rec) {
         this.plugin = plugin;
         this.name = name;
         this.world = world;
-        this.cuboid = meta.cuboid();
+        this.cuboid = rec.meta().cuboid();
         this.virtual = virtual;
-        this.palette = reader.palette() != null ? reader.palette() : List.of();
-        this.snapshotData = reader.blockData() != null ? reader.blockData() : new int[0];
-        this.snapshotSizeX = reader.blockSizeX();
-        this.snapshotSizeY = reader.blockSizeY();
-        this.snapshotSizeZ = reader.blockSizeZ();
-        this.snapNbt = decodeSnapNbt(reader.blockNbt());
-        this.timeline = reader.timeline() != null ? reader.timeline() : List.of();
+        this.palette = rec.palette() != null ? rec.palette() : List.of();
+        this.snapshotData = rec.blockData() != null ? rec.blockData() : new int[0];
+        this.snapshotSizeX = rec.blockSizeX();
+        this.snapshotSizeY = rec.blockSizeY();
+        this.snapshotSizeZ = rec.blockSizeZ();
+        this.snapNbt = decodeSnapNbt(rec.blockNbt());
+        this.timeline = rec.timeline() != null ? rec.timeline() : List.of();
         clock.setSpeed(plugin.cfg().getDouble("replay.default-speed", 1.0));
         skipSfxAbove = plugin.cfg().getDouble("replay.skip-sfx-when-speed-above", 2.0);
-        // Parse-once palette cache. Runs on the main thread (constructor is
-        // created inside a runTask), which Bukkit.createBlockData requires.
-        List<BlockData> pd = new ArrayList<>(palette.size());
-        List<Object> ps = new ArrayList<>(palette.size());
-        for (String state : palette) {
-            BlockData data = null;
-            Object wrapped = null;
-            try {
-                data = Bukkit.createBlockData(state);
-                wrapped = io.github.retrooper.packetevents.util.SpigotConversionUtil
-                        .fromBukkitBlockData(data);
-            } catch (Exception ignored) {
-            }
-            pd.add(data);
-            ps.add(wrapped);
-        }
-        this.paletteData = pd;
-        this.paletteStates = ps;
         long budgetMs = 8L;
         try {
             budgetMs = plugin.cfg().getLong("replay.phase-max-ms-per-tick", 8L);
@@ -189,22 +171,53 @@ public final class ReplaySession {
         return new ArrayList<>(viewers);
     }
 
-    /** Parsed BlockData for a palette index, or null (warn-once) when invalid. */
+    /** Parsed BlockData for a palette index, parsed once then cached. */
     private BlockData blockDataFor(int pi) {
-        if (pi < 0 || pi >= paletteData.size() || paletteData.get(pi) == null) {
+        return parsedFor(blockDataCache, palette, pi);
+    }
+
+    /** Packet block state for a palette index, converted once then cached. */
+    private Object packetStateFor(int pi) {
+        BlockData data = blockDataFor(pi);
+        if (data == null) return null;
+        Object cached = packetStateCache.get(pi);
+        if (cached != null) return cached;
+        try {
+            Object wrapped = io.github.retrooper.packetevents.util.SpigotConversionUtil
+                    .fromBukkitBlockData(data);
+            if (wrapped != null) packetStateCache.put(pi, wrapped);
+            return wrapped;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** Parsed BlockData for a live-terrain palette index, parsed once then cached. */
+    private BlockData liveDataFor(int pi) {
+        return parsedFor(liveDataCache, livePalette, pi);
+    }
+
+    private BlockData parsedFor(Map<Integer, BlockData> cache, List<String> pal, int pi) {
+        if (pi < 0 || pi >= pal.size()) {
             if (warnedBadPalette.add(pi)) {
                 EchoReplay.getPlugin(EchoReplay.class).getLogger()
-                        .warning("BlockSet apply failed palette=" + pi + " size=" + palette.size());
+                        .warning("BlockSet apply failed palette=" + pi + " size=" + pal.size());
             }
             return null;
         }
-        return paletteData.get(pi);
-    }
-
-    /** Packet block state for a palette index, or null when unavailable. */
-    private Object packetStateFor(int pi) {
-        if (pi < 0 || pi >= paletteStates.size()) return null;
-        return paletteStates.get(pi);
+        BlockData data = cache.get(pi);
+        if (data != null) return data;
+        try {
+            data = Bukkit.createBlockData(pal.get(pi));
+        } catch (Exception ex) {
+            if (warnedBadPalette.add(pi)) {
+                EchoReplay.getPlugin(EchoReplay.class).getLogger()
+                        .warning("BlockSet apply failed palette=" + pi + " size=" + pal.size() + " " + ex);
+            }
+            return null;
+        }
+        cache.put(pi, data);
+        return data;
     }
 
     /** Refresh the per-tick viewer cache. Called once per tick, not per event. */
@@ -448,7 +461,7 @@ public final class ReplaySession {
         capturePal = new ArrayList<>();
         capturePal.add("minecraft:air");
         liveNbt.clear();
-        liveBlockData = null;
+        liveDataCache.clear();
         phaseCursor = 0;
         phase = Phase.CAPTURE;
     }
@@ -508,8 +521,7 @@ public final class ReplaySession {
         int vol = snapshotData.length;
         while (phaseCursor < vol) {
             int i = phaseCursor++;
-            int pi = snapshotData[i];
-            BlockData data = (pi >= 0 && pi < paletteData.size()) ? paletteData.get(pi) : null;
+            BlockData data = blockDataFor(snapshotData[i]);
             if (data != null) {
                 int dx = i % sx;
                 int dz = (i / sx) % sz;
@@ -563,24 +575,13 @@ public final class ReplaySession {
             phase = Phase.DONE;
             return true;
         }
-        if (liveBlockData == null) {
-            liveBlockData = new ArrayList<>(livePalette.size());
-            for (String s : livePalette) {
-                try {
-                    liveBlockData.add(Bukkit.createBlockData(s));
-                } catch (Exception ignored) {
-                    liveBlockData.add(null);
-                }
-            }
-        }
         long deadline = System.nanoTime() + phaseBudgetNanos;
         int sx = cuboid.xSize(), sy = cuboid.ySize(), sz = cuboid.zSize();
         int minX = cuboid.min().x(), minY = cuboid.min().y(), minZ = cuboid.min().z();
         int vol = liveData.length;
         while (phaseCursor < vol) {
             int i = phaseCursor++;
-            int pi = liveData[i];
-            BlockData data = (pi >= 0 && pi < liveBlockData.size()) ? liveBlockData.get(pi) : null;
+            BlockData data = liveDataFor(liveData[i]);
             if (data != null) {
                 int dx = i % sx;
                 int dz = (i / sx) % sz;
@@ -594,6 +595,7 @@ public final class ReplaySession {
             if ((i & 1023) == 1023 && System.nanoTime() >= deadline) break;
         }
         if (phaseCursor < vol) return false;
+        liveDataCache.clear();
         for (Map.Entry<String, byte[]> e : liveNbt.entrySet()) {
             String[] parts = e.getKey().split(",");
             try {
@@ -606,7 +608,6 @@ public final class ReplaySession {
             } catch (Exception ignored) {
             }
         }
-        liveBlockData = null;
         phase = Phase.DONE;
         return true;
     }
@@ -754,6 +755,7 @@ public final class ReplaySession {
 
     /** Replay player equipment slots (0-5) with KeepInventory support. */
     private void replayPlayerEquipment(int runtime, TimelineEvent.PlayerSpawn s) {
+        if (s.equipment() == null) return; // mid-recording joiners carry no kit
         int slot = 0;
         for (byte[] itemBytes : s.equipment()) {
             if (itemBytes != null && itemBytes.length > 0) {

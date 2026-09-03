@@ -92,6 +92,8 @@ public final class RecordingManager {
 
     public File recordingsDir() { return recordingsDir; }
 
+    public EntityTickRecorder entityTickRecorder() { return entityTickRecorder; }
+
     public void onTick() {
         if (session == null) return;
         switch (session.state()) {
@@ -101,45 +103,56 @@ public final class RecordingManager {
         }
     }
 
+    private int snapCursor = 0;
+
     private void tickSnapshot() {
-        if (pendingSections == null || pendingIndex >= pendingSections.length) {
+        Cuboid c = session.cuboid();
+        int sx = c.xSize(), sy = c.ySize(), sz = c.zSize();
+        long vol = (long) sx * sy * sz;
+        if (vol <= 0) {
             finishSnapshotAndRecord();
             return;
         }
+        if (snapCursor < 0 || (long) snapCursor >= vol) snapCursor = 0;
+        // Time-boxed capture: the old fixed 8000-blocks/tick budget cost
+        // ~200ms+ per tick (getBlockData + getState per block) and halved TPS
+        // while snapshotting. blocksPerTick remains as a secondary cap.
+        long deadline = System.nanoTime() + 10_000_000L;
         int budget = blocksPerTick;
         int count = 0;
-        while (pendingIndex < pendingSections.length && count < budget) {
-            Cuboid.Section sec = pendingSections[pendingIndex];
-            captureSection(sec);
-            pendingIndex++;
-            session.markSection();
-            count += (int) sec.volume();
-        }
-    }
-
-    private void captureSection(Cuboid.Section sec) {
         World world = session.world();
-        Cuboid c = session.cuboid();
         PalettedStorage storage = session.snapshotStorage();
-        for (int x = sec.x0(); x <= sec.x1(); x++) {
-            for (int y = sec.y0(); y <= sec.y1(); y++) {
-                for (int z = sec.z0(); z <= sec.z1(); z++) {
-                    int dx = x - c.min().x();
-                    int dy = y - c.min().y();
-                    int dz = z - c.min().z();
-                    Block block = world.getBlockAt(x, y, z);
-                    String state = block.getBlockData() == null ? "minecraft:air" : block.getBlockData().getAsString(true);
-                    int pi = session.paletteIndex(state);
-                    storage.set(dx, dy, dz, pi);
-                    BlockState bs = block.getState();
-                    if (bs != null && Snapshotter.needsNbt(bs.getType())) {
-                        byte[] nb = NbtBytes.serializeBlockState(bs);
-                        if (nb != null && nb.length > 0) {
-                            session.putSnapshotNbt(BlockPos.of(dx, dy, dz), nb);
-                        }
-                    }
+        int minX = c.min().x(), minY = c.min().y(), minZ = c.min().z();
+        while ((long) snapCursor < vol && count < budget) {
+            int i = snapCursor++;
+            int dx = i % sx;
+            int dz = (i / sx) % sz;
+            int dy = i / (sx * sz);
+            int x = minX + dx, y = minY + dy, z = minZ + dz;
+            Block block = world.getBlockAt(x, y, z);
+            String state = block.getBlockData() == null ? "minecraft:air" : block.getBlockData().getAsString(true);
+            int pi = session.paletteIndex(state);
+            storage.set(dx, dy, dz, pi);
+            BlockState bs = block.getState();
+            if (bs != null && Snapshotter.needsNbt(bs.getType())) {
+                byte[] nb = NbtBytes.serializeBlockState(bs);
+                if (nb != null && nb.length > 0) {
+                    session.putSnapshotNbt(BlockPos.of(dx, dy, dz), nb);
                 }
             }
+            count++;
+            if ((count & 255) == 0 && System.nanoTime() >= deadline) break;
+        }
+        // Keep section progress monotonic for any status display.
+        if (pendingSections != null && pendingSections.length > 0) {
+            int target = (int) ((long) pendingSections.length * snapCursor / Math.max(1L, vol));
+            while (pendingIndex < target && pendingIndex < pendingSections.length) {
+                pendingIndex++;
+                session.markSection();
+            }
+        }
+        if ((long) snapCursor >= vol) {
+            finishSnapshotAndRecord();
         }
     }
 
@@ -261,6 +274,7 @@ public final class RecordingManager {
         session.setTotalSections(cuboid.sections().size());
         pendingSections = cuboid.sections().toArray(new Cuboid.Section[0]);
         pendingIndex = 0;
+        snapCursor = 0;
         return null;
     }
 
@@ -288,22 +302,17 @@ public final class RecordingManager {
         RecordingSession s = session;
         if (s == null) return "<red>Nothing recording.</red>";
         s.setFinalizing();
-        long duration = s.mediaMillis();
-        List<String> palette = s.snapshotPalette();
-        PalettedStorage storage = s.snapshotStorage();
-        Map<String, byte[]> snapNbt = s.snapshotNbt();
-        List<TimelineEvent> events = drainEvents(s);
-        Cuboid c = s.cuboid();
-
-        session = null;
+        // Stop producers first so the event stream ends here.
         regionDiffRecorder.stop();
-
-        final long fd = duration;
-        final List<String> fpal = palette;
-        final PalettedStorage fs = storage;
-        final Map<String, byte[]> fnbt = snapNbt;
-        final List<TimelineEvent> fev = events;
-        final Cuboid fc = c;
+        s.sink().close();
+        // Cheap main-thread captures only. Draining + sorting millions of
+        // events on the tick thread froze the server for seconds (TPS 5 on
+        // stop); that work now runs on the IO thread with the file write.
+        final long fd = s.mediaMillis();
+        final List<String> fpal = s.snapshotPalette();
+        final PalettedStorage fs = s.snapshotStorage();
+        final Map<String, byte[]> fnbt = s.snapshotNbt();
+        final Cuboid fc = s.cuboid();
         final long fsTime = s.startedMillis();
         final String fname = s.name();
         final String fworldName = s.world().getName();
@@ -311,8 +320,11 @@ public final class RecordingManager {
         final UUID frecorderUuid = s.recorderUuid();
         final String frecorderName = s.recorderName();
 
+        session = null;
+
         plugin.ioExecutor().execute(() -> {
             try {
+                List<TimelineEvent> fev = drainEvents(s);
                 writeFile(fname, fworldUuid, fworldName, fc, fd, fsTime,
                         frecorderUuid, frecorderName, fpal, fs, fnbt, fev);
             } catch (IOException e) {
