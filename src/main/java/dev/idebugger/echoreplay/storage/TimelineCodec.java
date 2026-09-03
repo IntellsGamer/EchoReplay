@@ -40,7 +40,6 @@ public final class TimelineCodec {
             case TimelineEvent.Mount ignored -> RecordingFormat.EV_MOUNT;
             case TimelineEvent.Sound ignored -> RecordingFormat.EV_SOUND;
             case TimelineEvent.Particle ignored -> RecordingFormat.EV_PARTICLE;
-            case TimelineEvent.Chat ignored -> RecordingFormat.EV_CHAT;
             case TimelineEvent.WorldTime ignored -> RecordingFormat.EV_WORLD_TIME;
             case TimelineEvent.Weather ignored -> RecordingFormat.EV_WEATHER;
             case TimelineEvent.Explosion ignored -> RecordingFormat.EV_EXPLOSION;
@@ -195,10 +194,6 @@ public final class TimelineCodec {
                 out.writeFloat(p.dz());
                 out.writeFloat(p.speed());
                 out.writeInt(p.count());
-            }
-            case TimelineEvent.Chat c -> {
-                out.writeInt(c.npcId());
-                Io.writeUtf(out, c.json());
             }
             case TimelineEvent.WorldTime w -> {
                 out.writeLong(w.time());
@@ -397,11 +392,6 @@ public final class TimelineCodec {
                 float speed = in.readFloat();
                 int count = in.readInt();
                 yield new TimelineEvent.Particle(tickMillis, key, new Vec3d(x, y, z), dx, dy, dz, speed, count);
-            }
-            case RecordingFormat.EV_CHAT -> {
-                int npc = in.readInt();
-                String json = Io.readUtf(in);
-                yield new TimelineEvent.Chat(tickMillis, npc, json);
             }
             case RecordingFormat.EV_WORLD_TIME -> {
                 long t = in.readLong();

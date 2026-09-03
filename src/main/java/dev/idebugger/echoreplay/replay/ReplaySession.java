@@ -46,9 +46,6 @@ public final class ReplaySession {
     private final Map<Integer, Integer> runtimeByStable = new HashMap<>();
     // stableId -> current position/rotation for the snapshot-reset seek
     private final Map<Integer, EntityPose> entityPoses = new HashMap<>();
-    // stableId -> recorded player display name, so chat can be re-rendered as
-    // "<Name> message" instead of a bare message bubble.
-    private final Map<Integer, String> nameByStable = new HashMap<>();
     private final FakeEntityTracker fakes = new FakeEntityTracker();
     private final List<UUID> viewers = new ArrayList<>();
 
@@ -146,7 +143,6 @@ public final class ReplaySession {
         stableToRuntime.clear();
         spawnedFor.clear();
         entityPoses.clear();
-        nameByStable.clear();
         runtimeFlags.clear();
         runtimePose.clear();
         dyingRuntimes.clear();
@@ -308,7 +304,6 @@ public final class ReplaySession {
             case TimelineEvent.Teleport t -> onTeleport(t);
             case TimelineEvent.Velocity ignored -> {}
             case TimelineEvent.Animation a -> onAnimation(a);
-            case TimelineEvent.Chat c -> onChat(c);
             case TimelineEvent.Equipment eq -> onEquipment(eq);
             case TimelineEvent.Pose p -> onPose(p);
             case TimelineEvent.SneakSprint s -> onSneakSprint(s);
@@ -373,7 +368,6 @@ public final class ReplaySession {
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
-        nameByStable.put(s.npcId(), s.name() != null ? s.name() : "?");
         for (Player p : liveViewers()) {
             fakes.spawnPlayer(p, runtime, s.uuid(), s.name(), s.skin(), s.pos(), s.rot());
             recordSpawnedFor(runtime, p);
@@ -444,42 +438,6 @@ public final class ReplaySession {
         for (Player p : liveViewers()) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p, anim);
-        }
-    }
-
-    private void onChat(TimelineEvent.Chat c) {
-        String name = nameByStable.getOrDefault(c.npcId(), null);
-        net.kyori.adventure.text.Component msg;
-        try {
-            msg = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
-                    .deserialize(c.json());
-        } catch (Exception ex) {
-            msg = net.kyori.adventure.text.Component.text(c.json());
-        }
-        net.kyori.adventure.text.Component full;
-        if (name == null || name.isEmpty()) {
-            full = msg;
-        } else {
-            full = net.kyori.adventure.text.Component.text()
-                    .append(net.kyori.adventure.text.Component.text("<" + name + ">")
-                            .color(net.kyori.adventure.text.format.NamedTextColor.GRAY))
-                    .append(net.kyori.adventure.text.Component.space())
-                    .append(msg)
-                    .build();
-        }
-        String json;
-        try {
-            json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(full);
-        } catch (Exception ex) {
-            String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
-                    .serialize(msg);
-            json = "{\"text\":\"" + (name == null ? "" : "<" + name + "> ") + plain + "\"}";
-        }
-        for (Player p : liveViewers()) {
-            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
-                    .sendPacket(p,
-                            new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(
-                                    false, json));
         }
     }
 
@@ -577,7 +535,6 @@ public final class ReplaySession {
     private void onDeath(int stableId) {
         Integer runtime = stableToRuntime.remove(stableId);
         entityPoses.remove(stableId);
-        nameByStable.remove(stableId);
         if (runtime == null) return;
         for (Player p : liveViewers()) {
             fakes.entityStatus(p, runtime, 3); // death status

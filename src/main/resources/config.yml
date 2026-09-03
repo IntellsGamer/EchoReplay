@@ -6,7 +6,6 @@ selection:
 recording:
   margin-blocks: 8
   flush-seconds: 15
-  capture-chat: true
   capture-time: true
   capture-particles: true
   max-particles-per-second: 400

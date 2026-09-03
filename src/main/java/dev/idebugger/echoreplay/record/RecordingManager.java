@@ -74,7 +74,6 @@ public final class RecordingManager {
         p.getServer().getPluginManager().registerEvents(new ConnectionRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new EntityRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new ActionRecorder(p), p);
-        p.getServer().getPluginManager().registerEvents(new ChatRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new DamageRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(equipmentRecorder, p);
     }

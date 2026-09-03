@@ -48,7 +48,6 @@ public final class RecordingFormat {
     public static final int EV_MOUNT = 17;
     public static final int EV_SOUND = 18;
     public static final int EV_PARTICLE = 19;
-    public static final int EV_CHAT = 20;
     public static final int EV_WORLD_TIME = 21;
     public static final int EV_WEATHER = 22;
     public static final int EV_EXPLOSION = 23;
