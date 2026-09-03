@@ -99,6 +99,12 @@ public final class FakeEntityTracker {
         send(viewer, new WrapperPlayServerEntityHeadLook(runtimeId, headYaw));
     }
 
+    /** Send an entity status/event (e.g. status 2 = hurt, 3 = death animation). */
+    public void entityStatus(Player viewer, int runtimeId, int status) {
+        send(viewer, new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityStatus(
+                runtimeId, status));
+    }
+
     /** Send an entity-metadata patch (stance flags / pose / eye height) to a viewer. */
     public void setMetadata(Player viewer, int runtimeId,
                              java.util.List<com.github.retrooper.packetevents.protocol.entity.data.EntityData<?>> data) {

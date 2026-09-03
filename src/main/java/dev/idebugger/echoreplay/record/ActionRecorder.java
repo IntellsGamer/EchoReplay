@@ -82,7 +82,7 @@ public final class ActionRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         if (!inRegion(s, e.getPlayer())) return;
         int npc = s.npcIdFor(e.getPlayer().getUniqueId());
-        int flags = (e.isSneaking() ? 1 : 0) | (e.getPlayer().isSprinting() ? 2 : 0);
+        int flags = (e.isSneaking() ? 0x02 : 0) | (e.getPlayer().isSprinting() ? 0x08 : 0);
         s.emit(new TimelineEvent.SneakSprint(s.mediaMillis(), npc, flags));
     }
 
@@ -92,7 +92,7 @@ public final class ActionRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         if (!inRegion(s, e.getPlayer())) return;
         int npc = s.npcIdFor(e.getPlayer().getUniqueId());
-        int flags = (e.getPlayer().isSneaking() ? 1 : 0) | (e.isSprinting() ? 2 : 0);
+        int flags = (e.getPlayer().isSneaking() ? 0x02 : 0) | (e.isSprinting() ? 0x08 : 0);
         s.emit(new TimelineEvent.SneakSprint(s.mediaMillis(), npc, flags));
     }
 }

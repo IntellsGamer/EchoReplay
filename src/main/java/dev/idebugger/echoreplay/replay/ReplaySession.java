@@ -46,8 +46,16 @@ public final class ReplaySession {
     private final Map<Integer, Integer> runtimeByStable = new HashMap<>();
     // stableId -> current position/rotation for the snapshot-reset seek
     private final Map<Integer, EntityPose> entityPoses = new HashMap<>();
+    // stableId -> recorded player display name, so chat can be re-rendered as
+    // "<Name> message" instead of a bare message bubble.
+    private final Map<Integer, String> nameByStable = new HashMap<>();
     private final FakeEntityTracker fakes = new FakeEntityTracker();
     private final List<UUID> viewers = new ArrayList<>();
+
+    // runtimeId -> ticks remaining before the fake entity is destroyed, so dead
+    // mobs play their death animation instead of vanishing instantly.
+    private final Map<Integer, Integer> dyingRuntimes = new HashMap<>();
+    private static final int DEATH_DELAY_TICKS = 22;
 
     private boolean started = false;
     private boolean stopping = false;
@@ -61,6 +69,12 @@ public final class ReplaySession {
     // can be merged into one absolute metadata packet (metadata is not relative).
     private final Map<Integer, Byte> runtimeFlags = new HashMap<>();
     private final Map<Integer, com.github.retrooper.packetevents.protocol.entity.pose.EntityPose> runtimePose = new HashMap<>();
+
+    // Metadata index-0 entity-flag bits we are allowed to transmit. Everything
+    // else (0x01 fire, 0x20 invisible, 0x40 glow, 0x80 elytra) is masked out.
+    private static final int FLAG_MASK_CROUCHED = 0x02;
+    private static final int FLAG_MASK_SPRINTING = 0x08;
+    private static final int FLAG_MASK_SWIMMING = 0x10;
 
     // Live terrain captured when playback starts (world mode only), so stopplay /
     // auto-end can restore the region to its pre-playback state.
@@ -126,11 +140,16 @@ public final class ReplaySession {
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
             destroyFor(e.getValue());
         }
+        for (Integer dying : dyingRuntimes.keySet()) {
+            destroyFor(dying);
+        }
         stableToRuntime.clear();
         spawnedFor.clear();
         entityPoses.clear();
+        nameByStable.clear();
         runtimeFlags.clear();
         runtimePose.clear();
+        dyingRuntimes.clear();
         // apply t=0 entity spawns
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() == 0) {
             applyEvent(timeline.get(appliedIndex));
@@ -141,6 +160,7 @@ public final class ReplaySession {
     /** Advance the clock and apply not-yet-applied events up to media time. */
     public boolean tick() {
         if (!started || stopping) return false;
+        tickDeaths();
         double media = clock.tick();
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= media) {
             TimelineEvent ev = timeline.get(appliedIndex);
@@ -152,6 +172,21 @@ public final class ReplaySession {
             return true;
         }
         return false;
+    }
+
+    /** Count down pending death animations and destroy the fake entity at the end. */
+    private void tickDeaths() {
+        if (dyingRuntimes.isEmpty()) return;
+        for (java.util.Iterator<Map.Entry<Integer, Integer>> it = dyingRuntimes.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Integer, Integer> en = it.next();
+            int left = en.getValue() - 1;
+            if (left <= 0) {
+                destroyFor(en.getKey());
+                it.remove();
+            } else {
+                en.setValue(left);
+            }
+        }
     }
 
     /**
@@ -224,6 +259,10 @@ public final class ReplaySession {
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
             destroyFor(e.getValue());
         }
+        for (Integer dying : dyingRuntimes.keySet()) {
+            destroyFor(dying);
+        }
+        dyingRuntimes.clear();
         stableToRuntime.clear();
         // Put the region back to its pre-playback state (world mode only).
         if (!virtual && liveCaptured) {
@@ -264,7 +303,7 @@ public final class ReplaySession {
             case TimelineEvent.EntitySpawn s -> onEntitySpawn(s);
             case TimelineEvent.PlayerLeave l -> despawn(l.npcId());
             case TimelineEvent.EntityLeave l -> despawn(l.npcId());
-            case TimelineEvent.Death d -> despawn(d.npcId());
+            case TimelineEvent.Death d -> onDeath(d.npcId());
             case TimelineEvent.Move m -> onMove(m);
             case TimelineEvent.Teleport t -> onTeleport(t);
             case TimelineEvent.Velocity ignored -> {}
@@ -273,6 +312,7 @@ public final class ReplaySession {
             case TimelineEvent.Equipment eq -> onEquipment(eq);
             case TimelineEvent.Pose p -> onPose(p);
             case TimelineEvent.SneakSprint s -> onSneakSprint(s);
+            case TimelineEvent.Damage d -> onDamage(d);
             default -> {}
         }
     }
@@ -333,6 +373,7 @@ public final class ReplaySession {
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
+        nameByStable.put(s.npcId(), s.name() != null ? s.name() : "?");
         for (Player p : liveViewers()) {
             fakes.spawnPlayer(p, runtime, s.uuid(), s.name(), s.skin(), s.pos(), s.rot());
             recordSpawnedFor(runtime, p);
@@ -407,11 +448,38 @@ public final class ReplaySession {
     }
 
     private void onChat(TimelineEvent.Chat c) {
+        String name = nameByStable.getOrDefault(c.npcId(), null);
+        net.kyori.adventure.text.Component msg;
+        try {
+            msg = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson()
+                    .deserialize(c.json());
+        } catch (Exception ex) {
+            msg = net.kyori.adventure.text.Component.text(c.json());
+        }
+        net.kyori.adventure.text.Component full;
+        if (name == null || name.isEmpty()) {
+            full = msg;
+        } else {
+            full = net.kyori.adventure.text.Component.text()
+                    .append(net.kyori.adventure.text.Component.text("<" + name + ">")
+                            .color(net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                    .append(net.kyori.adventure.text.Component.space())
+                    .append(msg)
+                    .build();
+        }
+        String json;
+        try {
+            json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(full);
+        } catch (Exception ex) {
+            String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
+                    .serialize(msg);
+            json = "{\"text\":\"" + (name == null ? "" : "<" + name + "> ") + plain + "\"}";
+        }
         for (Player p : liveViewers()) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p,
                             new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(
-                                    false, c.json()));
+                                    false, json));
         }
     }
 
@@ -452,6 +520,19 @@ public final class ReplaySession {
         pushStance(runtime);
     }
 
+    /** Replay a recorded damage hit: fire the client hurt red-flash animation. */
+    private void onDamage(TimelineEvent.Damage d) {
+        Integer runtime = stableToRuntime.get(d.npcId());
+        if (runtime == null) return;
+        // yaw roughly from the damage source direction; record stores the attacker
+        // source string but not a heading, so center the flash straight-on.
+        var anim = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHurtAnimation(
+                runtime, 0f);
+        for (Player p : liveViewers()) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(p, anim);
+        }
+    }
+
     private static com.github.retrooper.packetevents.protocol.entity.pose.EntityPose toEntityPose(int id) {
         for (com.github.retrooper.packetevents.protocol.entity.pose.EntityPose p
                 : com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.values()) {
@@ -462,7 +543,8 @@ public final class ReplaySession {
 
     /** Build and broadcast the merged stance metadata (flags + pose). */
     private void pushStance(int runtime) {
-        byte flags = runtimeFlags.getOrDefault(runtime, (byte) 0);
+        byte flags = (byte) (runtimeFlags.getOrDefault(runtime, (byte) 0)
+                & (FLAG_MASK_CROUCHED | FLAG_MASK_SPRINTING | FLAG_MASK_SWIMMING));
         com.github.retrooper.packetevents.protocol.entity.pose.EntityPose pose =
                 runtimePose.getOrDefault(runtime,
                         com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.STANDING);
@@ -482,6 +564,18 @@ public final class ReplaySession {
         entityPoses.remove(stableId);
         if (runtime == null) return;
         destroyFor(runtime);
+    }
+
+    /** Replay a recorded death: play the death animation, then destroy lazily. */
+    private void onDeath(int stableId) {
+        Integer runtime = stableToRuntime.remove(stableId);
+        entityPoses.remove(stableId);
+        nameByStable.remove(stableId);
+        if (runtime == null) return;
+        for (Player p : liveViewers()) {
+            fakes.entityStatus(p, runtime, 3); // death animation (client collapses the mob)
+        }
+        dyingRuntimes.put(runtime, DEATH_DELAY_TICKS);
     }
 
     /** Send a destroy packet to exactly the players this fake entity was spawned for. */

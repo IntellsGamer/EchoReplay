@@ -29,9 +29,12 @@ import java.util.UUID;
  */
 public final class EntityTickRecorder {
 
+    // Metadata index-0 entity flags (protocol bitmask). With real world values:
+    // 0x01 = on fire, 0x02 = sneaking, 0x08 = sprinting, 0x10 = swimming.
+    // We must never set 0x01 (fire) here, otherwise sneaking replays burn.
     private static final int FLAG_CROUCHED = 0x02;
-    private static final int FLAG_SPRINTING = 0x04;
-    private static final int FLAG_SWIMMING = 0x08;
+    private static final int FLAG_SPRINTING = 0x08;
+    private static final int FLAG_SWIMMING = 0x10;
 
     private final EchoReplay plugin;
     private final Map<java.util.UUID, EntityPose> lastKnown = new HashMap<>();
