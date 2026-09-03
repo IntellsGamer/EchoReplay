@@ -14,7 +14,7 @@ public sealed interface TimelineEvent
         TimelineEvent.Velocity, TimelineEvent.Animation, TimelineEvent.Metadata,
         TimelineEvent.Equipment, TimelineEvent.Pose, TimelineEvent.Damage, TimelineEvent.Death,
         TimelineEvent.SneakSprint, TimelineEvent.Mount, TimelineEvent.Sound, TimelineEvent.Particle,
-        TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
+        TimelineEvent.Chat, TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
         TimelineEvent.ItemUse, TimelineEvent.Teleport, TimelineEvent.Effect, TimelineEvent.CustomName,
         TimelineEvent.Marker {
 
@@ -43,6 +43,7 @@ public sealed interface TimelineEvent
     record Sound(long tickMillis, String key, String category, Vec3d pos, float volume, float pitch) implements TimelineEvent {}
     record Particle(long tickMillis, String particleKey, Vec3d pos, float dx, float dy, float dz,
                     float speed, int count) implements TimelineEvent {}
+    record Chat(long tickMillis, int npcId, String json) implements TimelineEvent {}
     record WorldTime(long tickMillis, long time, boolean cycling) implements TimelineEvent {}
     record Weather(long tickMillis, int rainStrength, int thunderStrength) implements TimelineEvent {}
     record Explosion(long tickMillis, Vec3d pos, float power) implements TimelineEvent {}
