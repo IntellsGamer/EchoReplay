@@ -400,8 +400,18 @@ public final class ReplaySession {
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
         for (Player p : liveViewers()) {
             fakes.spawnMob(p, runtime, s.uuid(), type, s.pos(), s.rot());
+            if (isBaby(s.metadata())) {
+                // Age metadata (index 15, var-int, negative = baby) makes the
+                // client render the mob at baby size instead of adult.
+                fakes.setMetadata(p, runtime, java.util.List.of(
+                        new EntityData<>(15, EntityDataTypes.INT, -24000)));
+            }
             recordSpawnedFor(runtime, p);
         }
+    }
+
+    private static boolean isBaby(byte[] metadata) {
+        return metadata != null && metadata.length == 1 && metadata[0] == 1;
     }
 
     private void onMove(TimelineEvent.Move m) {
