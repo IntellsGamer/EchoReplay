@@ -398,20 +398,18 @@ public final class ReplaySession {
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
+        java.util.List<int[]> spawnMeta = dev.idebugger.echoreplay.model.RecordedMetadata.decode(s.metadata());
         for (Player p : liveViewers()) {
             fakes.spawnMob(p, runtime, s.uuid(), type, s.pos(), s.rot());
-            if (isBaby(s.metadata())) {
-                // Age metadata (index 15, var-int, negative = baby) makes the
-                // client render the mob at baby size instead of adult.
-                fakes.setMetadata(p, runtime, java.util.List.of(
-                        new EntityData<>(15, EntityDataTypes.INT, -24000)));
+            if (!spawnMeta.isEmpty()) {
+                java.util.List<EntityData<?>> data = new ArrayList<>();
+                for (int[] entry : spawnMeta) {
+                    data.add(new EntityData<>(entry[0], EntityDataTypes.INT, entry[1]));
+                }
+                fakes.setMetadata(p, runtime, data);
             }
             recordSpawnedFor(runtime, p);
         }
-    }
-
-    private static boolean isBaby(byte[] metadata) {
-        return metadata != null && metadata.length == 1 && metadata[0] == 1;
     }
 
     private void onMove(TimelineEvent.Move m) {

@@ -86,7 +86,7 @@ public final class EntityTickRecorder {
                 // emit if the event listener did not already spawn this entity.
                 if (s.markEntitySpawned(uuid)) {
                     s.emit(new TimelineEvent.EntitySpawn(s.mediaMillis(), npc, uuid,
-                            e.getType().getKey().toString(), pos, rot, babyMetadata(e)));
+                            e.getType().getKey().toString(), pos, rot, dev.idebugger.echoreplay.model.RecordedMetadata.capture(e)));
                 }
                 lastKnown.put(uuid, new EntityPose(pos, rot));
             } else {
@@ -148,14 +148,6 @@ public final class EntityTickRecorder {
             lastFlags.put(uuid, flags);
             s.emit(new TimelineEvent.SneakSprint(s.mediaMillis(), npc, flags));
         }
-    }
-
-    /** Encodes baby-ness for the replay; see EntityRecorder.babyMetadata. */
-    private static byte[] babyMetadata(Entity e) {
-        if (e instanceof org.bukkit.entity.Ageable a && !a.isAdult()) {
-            return new byte[]{1};
-        }
-        return null;
     }
 
     private static boolean sameRot(Rotation a, Rotation b) {

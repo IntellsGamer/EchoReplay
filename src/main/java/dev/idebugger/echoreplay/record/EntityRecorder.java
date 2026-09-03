@@ -50,19 +50,7 @@ public final class EntityRecorder implements Listener {
                 ent.getType().getKey().toString(),
                 new Vec3d(ent.getLocation().x(), ent.getLocation().y(), ent.getLocation().z()),
                 new Rotation(ent.getLocation().getPitch(), ent.getLocation().getYaw(), ent.getLocation().getYaw()),
-                babyMetadata(ent)));
-    }
-
-    /**
-     * Encodes whether the (ageable) entity is a baby so the replay can re-create
-     * the baby size. {@code null} is returned for non-babies / non-ageable mobs so
-     * an unchanged spawn stays compact. See {@code onEntitySpawn} replay side.
-     */
-    private static byte[] babyMetadata(Entity ent) {
-        if (ent instanceof org.bukkit.entity.Ageable a && !a.isAdult()) {
-            return new byte[]{1};
-        }
-        return null;
+                dev.idebugger.echoreplay.model.RecordedMetadata.capture(ent)));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
