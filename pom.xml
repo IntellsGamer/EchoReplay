@@ -6,7 +6,7 @@
 
     <groupId>com.echoreplay</groupId>
     <artifactId>echoreplay</artifactId>
-    <version>1.0.16</version>
+    <version>1.0.17</version>
     <packaging>pom</packaging>
 
     <name>EchoReplay</name>

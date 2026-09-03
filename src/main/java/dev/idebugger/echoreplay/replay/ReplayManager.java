@@ -46,18 +46,28 @@ public final class ReplayManager implements Listener {
     public void onDisable() {
         if (session != null) {
             session.stop();
+            // Drain any pending terrain restore synchronously: at shutdown
+            // there is no tick loop left, and abandoning it would permanently
+            // leave snapshot blocks where the live terrain was.
+            int guard = 0;
+            while (!session.tick() && guard++ < 100000) {
+            }
             session = null;
         }
     }
 
     public void onTick() {
         if (session != null) {
-            boolean finished = session.tick();
-            // Playback border: client-side wireframe around the region, per-viewer toggle.
-            PlaybackBorderRenderer.tick(session);
-            if (finished) {
-                // Playback reached the end: restore terrain + unlock, end session.
-                stopPlay(false);
+            // tick() streams load/restore phases and advances playback; it
+            // returns true only when fully done (session may linger a few
+            // ticks after stop() while terrain restores).
+            boolean done = session.tick();
+            if (!session.isStopping()) {
+                // Playback border: client-side wireframe around the region, per-viewer toggle.
+                PlaybackBorderRenderer.tick(session);
+            }
+            if (done) {
+                session = null;
             }
         }
     }
@@ -133,37 +143,54 @@ public final class ReplayManager implements Listener {
 
     public String stopPlay(boolean restoreLive) {
         if (session == null) return "<red>Nothing playing.</red>";
+        // Begins the async stop (fakes destroyed now, terrain restores over
+        // the next ticks); the session clears itself when done.
         session.stop();
-        session = null;
         return "<green>Stopped playback.</green>";
+    }
+
+    /** Refuse control commands while a session is draining its stop. */
+    private String stoppingGuard() {
+        if (session != null && session.isStopping()) return "<gray>Playback is stopping…</gray>";
+        return null;
     }
 
     public String pause() {
         if (session == null) return "<red>Nothing playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         session.setPaused(true);
         return "<gray>Paused.</gray>";
     }
 
     public String resume() {
-        if (session == null) return "<red>Nothing playing.</red>";
+        if (session == null) return "<red>No replay is playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         session.setPaused(false);
         return "<gray>Resumed.</gray>";
     }
 
     public String speed(double s) {
         if (session == null) return "<red>Nothing playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         session.setSpeed(s);
         return "<gray>Speed set to " + s + "x.</gray>";
     }
 
     public String seek(double seconds) {
         if (session == null) return "<red>Nothing playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         session.seekTo(seconds * 1000);
         return "<gray>Seeked to " + RecordingManagerTime.format(seconds) + ".</gray>";
     }
 
     public String rewind(double seconds) {
         if (session == null) return "<red>Nothing playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         double target = Math.max(0, session.clock().mediaTime() - seconds * 1000);
         session.seekTo(target);
         return "<gray>Rewound to " + RecordingManagerTime.format(target / 1000) + ".</gray>";
@@ -171,6 +198,8 @@ public final class ReplayManager implements Listener {
 
     public String forward(double seconds) {
         if (session == null) return "<red>Nothing playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         double target = Math.min(session.durationMs(), session.clock().mediaTime() + seconds * 1000);
         session.seekTo(target);
         return "<gray>Fast-forwarded to " + RecordingManagerTime.format(target / 1000) + ".</gray>";
@@ -178,6 +207,8 @@ public final class ReplayManager implements Listener {
 
     public String watch(Player viewer) {
         if (session == null) return "<red>No replay is playing.</red>";
+        String g = stoppingGuard();
+        if (g != null) return g;
         session.addViewer(viewer);
         // send current fake-entity state to this viewer
         for (Map.Entry<Integer, Integer> e : sessionEntrySnapshot()) {

@@ -1,5 +1,5 @@
 name: EchoReplay
-version: 1.0.16
+version: 1.0.17
 main: dev.idebugger.echoreplay.EchoReplay
 api-version: '1.21'
 folia-supported: false
