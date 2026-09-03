@@ -320,13 +320,17 @@ public final class ReplaySession {
             case TimelineEvent.Death d -> onDeath(d.npcId());
             case TimelineEvent.Move m -> onMove(m);
             case TimelineEvent.Teleport t -> onTeleport(t);
-            case TimelineEvent.Velocity ignored -> {}
+            case TimelineEvent.Velocity v -> onVelocity(v);
             case TimelineEvent.Animation a -> onAnimation(a);
             case TimelineEvent.Chat c -> onChat(c);
             case TimelineEvent.Equipment eq -> onEquipment(eq);
             case TimelineEvent.Pose p -> onPose(p);
             case TimelineEvent.SneakSprint s -> onSneakSprint(s);
             case TimelineEvent.Damage d -> onDamage(d);
+            case TimelineEvent.Sound s -> onSound(s);
+            case TimelineEvent.Particle p -> onParticle(p);
+            case TimelineEvent.Explosion e -> onExplosion(e);
+            case TimelineEvent.EntityStatus s -> onEntityStatus(s);
             default -> {}
         }
     }
@@ -383,14 +387,57 @@ public final class ReplaySession {
         }
     }
 
+    /** Replay a player respawn (including KeepInventory armor and equipment). */
     private void onPlayerSpawn(TimelineEvent.PlayerSpawn s) {
+        if (stableToRuntime.containsKey(s.npcId())) {
+            int existing = stableToRuntime.get(s.npcId());
+            entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
+            for (Player p : liveViewers()) {
+                fakes.positionSync(p, existing, s.pos(), s.rot(), true);
+            }
+            // Also replay equipment for respawned player
+            replayPlayerEquipment(existing, s);
+            return;
+        }
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
         nameByStable.put(s.npcId(), s.name() != null ? s.name() : "?");
+        // Replay equipment for new spawn
+        replayPlayerEquipment(runtime, s);
         for (Player p : liveViewers()) {
             fakes.spawnPlayer(p, runtime, s.uuid(), s.name(), s.skin(), s.pos(), s.rot());
             recordSpawnedFor(runtime, p);
+        }
+    }
+
+    /** Replay player equipment slots (0-5) with KeepInventory support. */
+    private void replayPlayerEquipment(int runtime, TimelineEvent.PlayerSpawn s) {
+        int slot = 0;
+        for (byte[] itemBytes : s.equipment()) {
+            if (itemBytes != null && itemBytes.length > 0) {
+                var item = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(itemBytes);
+                if (!item.isEmpty()) {
+                    com.github.retrooper.packetevents.protocol.player.EquipmentSlot peSlot =
+                            switch (slot) {
+                                case 0 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND;
+                                case 1 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND;
+                                case 2 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS;
+                                case 3 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS;
+                                case 4 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE;
+                                case 5 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET;
+                                default -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND;
+                            };
+                    var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(item);
+                    var eqPacket = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment(
+                            runtime, java.util.List.of(new com.github.retrooper.packetevents.protocol.player.Equipment(peSlot, peItem)));
+                    for (Player p : liveViewers()) {
+                        com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                                .sendPacket(p, eqPacket);
+                    }
+                }
+            }
+            slot++;
         }
     }
 
@@ -418,19 +465,26 @@ public final class ReplaySession {
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
-        java.util.List<int[]> spawnMeta = dev.idebugger.echoreplay.model.RecordedMetadata.decode(s.metadata());
+        java.util.List<dev.idebugger.echoreplay.model.RecordedMetadata.Entry> spawnMeta =
+                dev.idebugger.echoreplay.model.RecordedMetadata.decodeEntries(s.metadata());
         for (Player p : liveViewers()) {
             fakes.spawnMob(p, runtime, s.uuid(), type, s.pos(), s.rot());
             if (!spawnMeta.isEmpty()) {
                 java.util.List<EntityData<?>> data = new ArrayList<>();
-                for (int[] entry : spawnMeta) {
-                    int idx = entry[0];
-                    int kind = entry[1];
-                    int value = entry[2];
+                for (dev.idebugger.echoreplay.model.RecordedMetadata.Entry entry : spawnMeta) {
+                    int idx = entry.index();
+                    int kind = entry.type();
                     if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BYTE) {
-                        data.add(new EntityData<>(idx, EntityDataTypes.BYTE, (byte) value));
+                        data.add(new EntityData<>(idx, EntityDataTypes.BYTE, (byte) entry.intValue()));
+                    } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BOOLEAN) {
+                        data.add(new EntityData<>(idx, EntityDataTypes.BOOLEAN, entry.intValue() != 0));
+                    } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_ITEMSTACK) {
+                        byte[] itemBytes = entry.itemBytes();
+                        org.bukkit.inventory.ItemStack bukkitItem = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(itemBytes);
+                        var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(bukkitItem);
+                        data.add(new EntityData<>(idx, EntityDataTypes.ITEMSTACK, peItem));
                     } else {
-                        data.add(new EntityData<>(idx, EntityDataTypes.INT, value));
+                        data.add(new EntityData<>(idx, EntityDataTypes.INT, entry.intValue()));
                     }
                 }
                 fakes.setMetadata(p, runtime, data);
@@ -566,6 +620,69 @@ public final class ReplaySession {
                     .sendPacket(p, hurt);
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p, dmg);
+        }
+    }
+
+    private void onVelocity(TimelineEvent.Velocity v) {
+        Integer runtime = stableToRuntime.get(v.npcId());
+        if (runtime == null) return;
+        for (Player p : liveViewers()) {
+            fakes.velocity(p, runtime, v.vel());
+        }
+    }
+
+    private void onSound(TimelineEvent.Sound s) {
+        // Respect speed-sipping: skip ambience when fast-forwarding
+        if (clock.speed() > skipSfxAbove) return;
+        org.bukkit.Location loc = new org.bukkit.Location(world, s.pos().x(), s.pos().y(), s.pos().z());
+        String key = s.key();
+        if (key.startsWith("minecraft:")) key = key.substring("minecraft:".length());
+        org.bukkit.SoundCategory cat;
+        try {
+            cat = org.bukkit.SoundCategory.valueOf(s.category().toUpperCase());
+        } catch (Exception ex) {
+            cat = org.bukkit.SoundCategory.MASTER;
+        }
+        for (Player p : liveViewers()) {
+            try {
+                p.playSound(loc, key, cat, s.volume(), s.pitch());
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void onParticle(TimelineEvent.Particle p) {
+        if (clock.speed() > skipSfxAbove) return;
+        String raw = p.particleKey();
+        String key = raw.contains(":") ? raw.substring(raw.indexOf(":") + 1) : raw;
+        org.bukkit.Particle bukkitPart;
+        try {
+            bukkitPart = org.bukkit.Particle.valueOf(key.toUpperCase());
+        } catch (Exception ex) {
+            return;
+        }
+        org.bukkit.Location loc = new org.bukkit.Location(world, p.pos().x(), p.pos().y(), p.pos().z());
+        for (Player viewer : liveViewers()) {
+            try {
+                viewer.spawnParticle(bukkitPart, loc, p.count(), p.dx(), p.dy(), p.dz(), p.speed());
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void onExplosion(TimelineEvent.Explosion e) {
+        org.bukkit.Location loc = new org.bukkit.Location(world, e.pos().x(), e.pos().y(), e.pos().z());
+        for (Player p : liveViewers()) {
+            try {
+                p.spawnParticle(org.bukkit.Particle.EXPLOSION, loc, 1);
+                p.playSound(loc, "entity.generic.explode", org.bukkit.SoundCategory.BLOCKS, 1f, 1f);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void onEntityStatus(TimelineEvent.EntityStatus s) {
+        Integer runtime = stableToRuntime.get(s.npcId());
+        if (runtime == null) return;
+        for (Player p : liveViewers()) {
+            fakes.entityStatus(p, runtime, s.status() & 0xFF);
         }
     }
 

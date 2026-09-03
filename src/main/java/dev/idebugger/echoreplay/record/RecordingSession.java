@@ -37,6 +37,9 @@ public final class RecordingSession {
     private final Map<String, Integer> paletteIndex = new HashMap<>();
     private final java.util.List<String> paletteList = new java.util.ArrayList<>();
 
+    // last known player equipment before death, keyed by UUID
+    private final Map<UUID, java.util.List<byte[]>> lastPlayerEquipment = new HashMap<>();
+
     // initial snapshot block storage (filled during SNAPSHOTTING on main thread)
     private PalettedStorage snapshotStorage;
     private final Map<String, byte[]> snapshotNbt = new java.util.LinkedHashMap<>();
@@ -145,6 +148,15 @@ public final class RecordingSession {
     /** Emit an event with current media time. */
     public void emit(TimelineEvent e) {
         sink.add(e);
+    }
+
+    public synchronized void cachePlayerEquipment(UUID uuid, java.util.List<byte[]> equipment) {
+        lastPlayerEquipment.put(uuid, equipment);
+    }
+
+    public synchronized java.util.List<byte[]> takeCachedPlayerEquipment(UUID uuid) {
+        java.util.List<byte[]> out = lastPlayerEquipment.remove(uuid);
+        return out != null ? out : java.util.Collections.emptyList();
     }
 
     public void advanceClock(long deltaMs) {

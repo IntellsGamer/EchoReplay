@@ -40,6 +40,8 @@ public final class EntityTickRecorder {
     private final Map<java.util.UUID, EntityPose> lastKnown = new HashMap<>();
     private final Map<UUID, Integer> lastPose = new HashMap<>();
     private final Map<UUID, Integer> lastFlags = new HashMap<>();
+    private final Map<UUID, org.bukkit.util.Vector> lastVel = new HashMap<>();
+    private final Map<java.util.UUID, EntityPose> lastPlayerSeen = new HashMap<>();
 
     public EntityTickRecorder(EchoReplay plugin) {
         this.plugin = plugin;
@@ -69,7 +71,6 @@ public final class EntityTickRecorder {
             // Pose / stance capture applies to everyone (players + mobs).
             captureStance(s, uuid, e);
 
-            if (isPlayer) continue;
             double x = e.getLocation().getX();
             double y = e.getLocation().getY();
             double z = e.getLocation().getZ();
@@ -78,6 +79,21 @@ public final class EntityTickRecorder {
             Vec3d pos = new Vec3d(x, y, z);
             Rotation rot = new Rotation(pitch, yaw, yaw);
             observed.put(uuid, new EntityPose(pos, rot));
+
+            if (isPlayer) {
+                EntityPose prevPlayer = lastPlayerSeen.get(uuid);
+                if (prevPlayer == null) {
+                    if (s.markEntitySpawned(uuid)) {
+                        int npc = s.npcIdFor(uuid);
+                        s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, uuid,
+                                e.getName(), null, pos, rot, null, null));
+                    }
+                    lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
+                } else {
+                    lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
+                }
+                continue;
+            }
 
             int npc = s.npcIdFor(uuid);
             EntityPose prev = lastKnown.get(uuid);
@@ -96,6 +112,22 @@ public final class EntityTickRecorder {
                     lastKnown.put(uuid, new EntityPose(pos, rot));
                 }
             }
+            // Velocity for projectiles (firework rockets, arrows, etc.) so
+            // crossbow-launched flight direction and speed replay correctly.
+            if (e instanceof org.bukkit.entity.Projectile) {
+                org.bukkit.util.Vector vel = e.getVelocity();
+                org.bukkit.util.Vector prevVel = lastVel.get(uuid);
+                double eps = 0.001;
+                boolean changed = prevVel == null
+                        || Math.abs(prevVel.getX() - vel.getX()) > eps
+                        || Math.abs(prevVel.getY() - vel.getY()) > eps
+                        || Math.abs(prevVel.getZ() - vel.getZ()) > eps;
+                if (changed) {
+                    s.emit(new TimelineEvent.Velocity(s.mediaMillis(), npc,
+                            new Vec3d(vel.getX(), vel.getY(), vel.getZ())));
+                    lastVel.put(uuid, vel.clone());
+                }
+            }
         }
 
         // Emit LEAVE for tracked mobs no longer present in the region.
@@ -107,6 +139,23 @@ public final class EntityTickRecorder {
                     int npc = s.npcIdFor(en.getKey());
                     long t = s.mediaMillis();
                     s.emit(new TimelineEvent.EntityLeave(t, npc));
+                    it.remove();
+                    lastVel.remove(en.getKey());
+                    lastPose.remove(en.getKey());
+                    lastFlags.remove(en.getKey());
+                }
+            }
+        }
+
+        // Emit LEAVE for tracked players no longer present in the region.
+        if (!lastPlayerSeen.isEmpty()) {
+            java.util.Iterator<Map.Entry<java.util.UUID, EntityPose>> it = lastPlayerSeen.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<java.util.UUID, EntityPose> en = it.next();
+                if (!observed.containsKey(en.getKey())) {
+                    int npc = s.npcIdFor(en.getKey());
+                    long t = s.mediaMillis();
+                    s.emit(new TimelineEvent.PlayerLeave(t, npc, 1));
                     it.remove();
                 }
             }
@@ -159,5 +208,7 @@ public final class EntityTickRecorder {
         lastKnown.clear();
         lastPose.clear();
         lastFlags.clear();
+        lastVel.clear();
+        lastPlayerSeen.clear();
     }
 }

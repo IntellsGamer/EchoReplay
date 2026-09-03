@@ -111,4 +111,9 @@ public final class FakeEntityTracker {
         if (data.isEmpty()) return;
         send(viewer, new WrapperPlayServerEntityMetadata(runtimeId, data));
     }
+
+    public void velocity(Player viewer, int runtimeId, dev.idebugger.echoreplay.model.Vec3d vel) {
+        send(viewer, new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityVelocity(
+                runtimeId, new com.github.retrooper.packetevents.util.Vector3d(vel.x(), vel.y(), vel.z())));
+    }
 }

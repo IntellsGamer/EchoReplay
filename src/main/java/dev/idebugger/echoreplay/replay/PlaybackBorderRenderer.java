@@ -9,14 +9,15 @@ import org.bukkit.entity.Player;
 import java.util.List;
 
 /**
- * Client-side wireframe particles around the playback cuboid.
+ * Client-side border particles around the playback cuboid.
  * Uses per-player {@code Player#spawnParticle} which sends a single
  * {@code WrapperPlayServerWorldParticles} packet to that viewer only —
  * pure protocol trick, no world change or server-wide broadcast.
  * <p>
- * The border is rendered as a 12-edge wireframe cube enclosing the region.
- * It is throttled by {@code replay.border.interval-ticks} and adaptive
- * stepping so large regions don't spam packets.
+ * The border is rendered as filled faces (whole area of each side) with grid
+ * spacing, not just the 12 edges. It is throttled by
+ * {@code replay.border.interval-ticks} and adaptive stepping so large regions
+ * don't spam packets.
  */
 public final class PlaybackBorderRenderer {
 
@@ -58,15 +59,16 @@ public final class PlaybackBorderRenderer {
         int maxPerFrame = plugin.cfg().getInt("replay.border.max-per-frame", 300);
         if (maxPerFrame <= 0) maxPerFrame = 300;
 
-        // Adaptive step to cap packets for huge cuboids.
+        // Adaptive step to cap packets for huge cuboids (now based on filled faces area).
         int xSize = c.xSize();
         int ySize = c.ySize();
         int zSize = c.zSize();
-        double totalLen = 4.0 * (xSize + ySize + zSize);
-        double est = totalLen / cfgStep;
+        double totalArea = 2.0 * (xSize * (double) ySize + xSize * (double) zSize + ySize * (double) zSize);
+        double est = totalArea / (cfgStep * cfgStep);
         double step = cfgStep;
         if (est > maxPerFrame) {
-            step = totalLen / maxPerFrame;
+            step = Math.sqrt(totalArea / maxPerFrame);
+            if (step < 0.5) step = 0.5;
         }
 
         PlaybackBorderPrefs prefs = plugin.borderPrefs();
@@ -99,43 +101,48 @@ public final class PlaybackBorderRenderer {
         double y2 = c.max().y() + 1;
         double z2 = c.max().z() + 1;
 
-        // Bottom square (y = y1)
-        line(p, particle, dustData, x1, y1, z1, x2, y1, z1, step);
-        line(p, particle, dustData, x2, y1, z1, x2, y1, z2, step);
-        line(p, particle, dustData, x2, y1, z2, x1, y1, z2, step);
-        line(p, particle, dustData, x1, y1, z2, x1, y1, z1, step);
-        // Top square (y = y2)
-        line(p, particle, dustData, x1, y2, z1, x2, y2, z1, step);
-        line(p, particle, dustData, x2, y2, z1, x2, y2, z2, step);
-        line(p, particle, dustData, x2, y2, z2, x1, y2, z2, step);
-        line(p, particle, dustData, x1, y2, z2, x1, y2, z1, step);
-        // Vertical pillars
-        line(p, particle, dustData, x1, y1, z1, x1, y2, z1, step);
-        line(p, particle, dustData, x2, y1, z1, x2, y2, z1, step);
-        line(p, particle, dustData, x1, y1, z2, x1, y2, z2, step);
-        line(p, particle, dustData, x2, y1, z2, x2, y2, z2, step);
+        // Fill whole area of each of the 6 faces with grid spacing.
+        // Bottom (y = y1) and top (y = y2)
+        faceY(p, particle, dustData, x1, x2, z1, z2, y1, step);
+        faceY(p, particle, dustData, x1, x2, z1, z2, y2, step);
+        // North (z = z1) and south (z = z2) - X*Y planes
+        faceZ(p, particle, dustData, x1, x2, y1, y2, z1, step);
+        faceZ(p, particle, dustData, x1, x2, y1, y2, z2, step);
+        // West (x = x1) and east (x = x2) - Y*Z planes
+        faceX(p, particle, dustData, y1, y2, z1, z2, x1, step);
+        faceX(p, particle, dustData, y1, y2, z1, z2, x2, step);
     }
 
-    private static void line(Player p, Particle particle, Object dustData,
-                             double x1, double y1, double z1,
-                             double x2, double y2, double z2,
-                             double step) {
-        double dx = x2 - x1;
-        double dy = y2 - y1;
-        double dz = z2 - z1;
-        double len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        if (len <= 0.001) {
-            spawn(p, particle, dustData, x1, y1, z1);
-            return;
+    private static void faceY(Player p, Particle particle, Object dustData,
+                              double x1, double x2, double z1, double z2, double y, double step) {
+        for (double x = x1; x <= x2 + 1e-6; x += step) {
+            double cx = Math.min(x, x2);
+            for (double z = z1; z <= z2 + 1e-6; z += step) {
+                double cz = Math.min(z, z2);
+                spawn(p, particle, dustData, cx, y, cz);
+            }
         }
-        int steps = (int) Math.ceil(len / step);
-        if (steps < 1) steps = 1;
-        for (int i = 0; i <= steps; i++) {
-            double t = (double) i / steps;
-            double x = x1 + dx * t;
-            double y = y1 + dy * t;
-            double z = z1 + dz * t;
-            spawn(p, particle, dustData, x, y, z);
+    }
+
+    private static void faceZ(Player p, Particle particle, Object dustData,
+                              double x1, double x2, double y1, double y2, double z, double step) {
+        for (double x = x1; x <= x2 + 1e-6; x += step) {
+            double cx = Math.min(x, x2);
+            for (double y = y1; y <= y2 + 1e-6; y += step) {
+                double cy = Math.min(y, y2);
+                spawn(p, particle, dustData, cx, cy, z);
+            }
+        }
+    }
+
+    private static void faceX(Player p, Particle particle, Object dustData,
+                              double y1, double y2, double z1, double z2, double x, double step) {
+        for (double y = y1; y <= y2 + 1e-6; y += step) {
+            double cy = Math.min(y, y2);
+            for (double z = z1; z <= z2 + 1e-6; z += step) {
+                double cz = Math.min(z, z2);
+                spawn(p, particle, dustData, x, cy, cz);
+            }
         }
     }
 

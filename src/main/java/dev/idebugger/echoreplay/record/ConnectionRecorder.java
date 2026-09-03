@@ -44,6 +44,7 @@ public final class ConnectionRecorder implements Listener {
         Player p = e.getPlayer();
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
+        s.markEntitySpawned(p.getUniqueId());
         s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, p.getUniqueId(), p.getName(),
                 skin(p), pos(p), rot(p), equipment(p), null));
     }
@@ -74,8 +75,13 @@ public final class ConnectionRecorder implements Listener {
         }
         if (s.cuboid().contains(e.getRespawnLocation().getBlockX(), e.getRespawnLocation().getBlockY(), e.getRespawnLocation().getBlockZ())) {
             int npc = s.npcIdFor(p.getUniqueId());
+            s.markEntitySpawned(p.getUniqueId());
+            java.util.List<byte[]> equip = s.takeCachedPlayerEquipment(p.getUniqueId());
+            if (equip.isEmpty()) {
+                equip = equipment(p);
+            }
             s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, p.getUniqueId(), p.getName(),
-                    skin(p), pos(e.getRespawnLocation()), rot(e.getRespawnLocation()), equipment(p), null));
+                    skin(p), pos(e.getRespawnLocation()), rot(e.getRespawnLocation()), equip, null));
         }
     }
 

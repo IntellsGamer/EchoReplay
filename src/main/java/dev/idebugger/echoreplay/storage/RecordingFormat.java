@@ -57,4 +57,5 @@ public final class RecordingFormat {
     public static final int EV_EFFECT = 26;
     public static final int EV_CUSTOM_NAME = 27;
     public static final int EV_MARKER = 28;
+    public static final int EV_ENTITY_STATUS = 29;
 }

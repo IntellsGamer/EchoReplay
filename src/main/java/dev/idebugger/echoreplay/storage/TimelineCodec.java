@@ -49,6 +49,7 @@ public final class TimelineCodec {
             case TimelineEvent.Effect ignored -> RecordingFormat.EV_EFFECT;
             case TimelineEvent.CustomName ignored -> RecordingFormat.EV_CUSTOM_NAME;
             case TimelineEvent.Marker ignored -> RecordingFormat.EV_MARKER;
+            case TimelineEvent.EntityStatus ignored -> RecordingFormat.EV_ENTITY_STATUS;
         };
     }
 
@@ -240,6 +241,10 @@ public final class TimelineCodec {
                 Io.writeUtf(out, n.componentJson());
             }
             case TimelineEvent.Marker m -> Io.writeUtf(out, m.name());
+            case TimelineEvent.EntityStatus s -> {
+                out.writeInt(s.npcId());
+                out.writeByte(s.status());
+            }
         }
         out.flush();
         return bos.toByteArray();
@@ -447,6 +452,11 @@ public final class TimelineCodec {
                 yield new TimelineEvent.CustomName(tickMillis, npc, json);
             }
             case RecordingFormat.EV_MARKER -> new TimelineEvent.Marker(tickMillis, Io.readUtf(in));
+            case RecordingFormat.EV_ENTITY_STATUS -> {
+                int npc = in.readInt();
+                byte st = (byte) in.readByte();
+                yield new TimelineEvent.EntityStatus(tickMillis, npc, st);
+            }
             default -> null;
         };
     }

@@ -16,7 +16,7 @@ public sealed interface TimelineEvent
         TimelineEvent.SneakSprint, TimelineEvent.Mount, TimelineEvent.Sound, TimelineEvent.Particle,
         TimelineEvent.Chat, TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
         TimelineEvent.ItemUse, TimelineEvent.Teleport, TimelineEvent.Effect, TimelineEvent.CustomName,
-        TimelineEvent.Marker {
+        TimelineEvent.Marker, TimelineEvent.EntityStatus {
 
     long tickMillis();
 
@@ -52,4 +52,5 @@ public sealed interface TimelineEvent
     record Effect(long tickMillis, int npcId, boolean add, String effectKey, byte[] data) implements TimelineEvent {}
     record CustomName(long tickMillis, int npcId, String componentJson) implements TimelineEvent {}
     record Marker(long tickMillis, String name) implements TimelineEvent {}
+    record EntityStatus(long tickMillis, int npcId, byte status) implements TimelineEvent {}
 }

@@ -14,6 +14,8 @@ import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntitySpawnEvent;
 import org.bukkit.event.entity.EntityRemoveEvent;
 
+import java.util.List;
+
 /**
  * Records entity spawn / move / death for the active recording. Player entities
  * are handled by ConnectionRecorder; this handles mobs, items, projectiles.
@@ -63,6 +65,17 @@ public final class EntityRecorder implements Listener {
         if (s.cuboid().contains(ent.getLocation().getBlockX(),
                 ent.getLocation().getBlockY(), ent.getLocation().getBlockZ())) {
             int npc = s.npcIdFor(ent.getUniqueId());
+            if (ent instanceof Player p && p.getWorld().getGameRuleValue(org.bukkit.GameRule.KEEP_INVENTORY)) {
+                java.util.List<byte[]> equip = List.of(
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getItemInMainHand()),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getItemInOffHand()),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getBoots()),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getLeggings()),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getChestplate()),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.serializeItem(p.getInventory().getHelmet())
+                );
+                s.cachePlayerEquipment(p.getUniqueId(), equip);
+            }
             s.emit(new TimelineEvent.Death(s.mediaMillis(), npc));
             s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
         }

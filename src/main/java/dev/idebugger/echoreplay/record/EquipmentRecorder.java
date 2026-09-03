@@ -86,7 +86,7 @@ public final class EquipmentRecorder implements Listener {
         }
     }
 
-    static byte[] serializeItem(org.bukkit.inventory.ItemStack item) {
+    public static byte[] serializeItem(org.bukkit.inventory.ItemStack item) {
         if (item == null || item.getType() == org.bukkit.Material.AIR) {
             return new byte[0];
         }

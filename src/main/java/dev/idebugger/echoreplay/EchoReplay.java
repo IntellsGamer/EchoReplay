@@ -35,6 +35,7 @@ public final class EchoReplay extends JavaPlugin {
     private ExecutorService ioExecutor;
     private int tickTaskId = -1;
     private com.github.retrooper.packetevents.event.PacketListenerCommon movementListener;
+    private com.github.retrooper.packetevents.event.PacketListenerCommon outboundListener;
 
     public static EchoReplay get() {
         return INSTANCE.get();
@@ -73,6 +74,8 @@ public final class EchoReplay extends JavaPlugin {
 
         movementListener = com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager()
                 .registerListener(new dev.idebugger.echoreplay.record.MovementRecorder(this));
+        outboundListener = com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager()
+                .registerListener(new dev.idebugger.echoreplay.record.PacketOutRecorder(this));
 
         tickTaskId = getServer().getScheduler()
                 .runTaskTimer(this, this::onTick, 1L, 1L).getTaskId();
@@ -91,6 +94,10 @@ public final class EchoReplay extends JavaPlugin {
         if (movementListener != null) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(movementListener);
             movementListener = null;
+        }
+        if (outboundListener != null) {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(outboundListener);
+            outboundListener = null;
         }
         if (ioExecutor != null) ioExecutor.shutdown();
         PacketEventsSetup.onDisable();
