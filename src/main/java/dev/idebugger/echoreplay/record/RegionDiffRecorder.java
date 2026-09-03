@@ -162,14 +162,25 @@ public final class RegionDiffRecorder {
      */
     private final java.util.concurrent.LinkedBlockingQueue<Pending> pending =
             new java.util.concurrent.LinkedBlockingQueue<>();
+    // Coalesces flush scheduling: a burst of N diffs schedules exactly one
+    // main-thread task instead of N. Without this, a busy region (flowing
+    // water, farms, explosions) queues thousands of sync tasks per 50ms pass
+    // and stalls the server tick loop (watchdog hang).
+    private final java.util.concurrent.atomic.AtomicBoolean flushScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     record Pending(RecordingSession s, int x, int y, int z, String state) {}
 
     private void enqueueEmit(RecordingSession s, int x, int y, int z, String state) {
         pending.add(new Pending(s, x, y, z, state));
         // Schedule one main-thread flush for this burst of emissions.
-        EchoReplay.getPlugin(EchoReplay.class)
-                .getServer().getScheduler().runTask(plugin, this::flushPendingMainThread);
+        if (flushScheduled.compareAndSet(false, true)) {
+            EchoReplay.getPlugin(EchoReplay.class)
+                    .getServer().getScheduler().runTask(plugin, () -> {
+                        flushScheduled.set(false);
+                        flushPendingMainThread();
+                    });
+        }
     }
 
     private void flushPendingMainThread() {
@@ -218,6 +229,22 @@ public final class RegionDiffRecorder {
         private static java.lang.reflect.Method worldGetChunk;
         private static java.lang.reflect.Method chunkGetBlockState;
         private static java.lang.reflect.Method serializeState;
+        // Direct block-state serializer (no BlockStateParser dependency).
+        // Reproduces vanilla "minecraft:id[prop=val,...]" output using only
+        // long-stable public NMS API, so renames like ResourceLocation ->
+        // Identifier (1.21.11+) or BlockStateParser signature changes cannot
+        // break scanning. Resolution:
+        //   state.getBlock() -> Block.builtInRegistryHolder() -> unwrapKey()
+        //   -> Optional<ResourceKey> -> location()/identifier() -> id string,
+        //   plus state.getProperties()/getValues() and Property.getName().
+        private static java.lang.reflect.Method stateGetBlock;
+        private static java.lang.reflect.Method blockHolder;
+        private static java.lang.reflect.Method holderUnwrapKey;
+        private static java.lang.reflect.Method stateGetProperties;
+        private static java.lang.reflect.Method stateGetValues;
+        private static volatile java.lang.reflect.Method keyLocation;
+        private static volatile java.lang.reflect.Method propName;
+        private static volatile java.lang.reflect.Method propValueName;
 
         static {
             resolve();
@@ -264,6 +291,10 @@ public final class RegionDiffRecorder {
                     }
                 }
                 // BlockStateParser.serialize(BlockState) -> "minecraft:xxx[props]"
+                // Fast path only: in newer NMS the parser's contract may change
+                // (extra params, non-String return), so only accept methods that
+                // still return plain String. The direct serializer below is the
+                // robust fallback and works on every version.
                 if (resolved) {
                     String[] parserClasses = {
                             "net.minecraft.commands.arguments.blocks.BlockStateParser",
@@ -274,10 +305,31 @@ public final class RegionDiffRecorder {
                             Class<?> cls = Class.forName(pc);
                             java.lang.reflect.Method m = cls.getMethod("serialize",
                                     chunkGetBlockState.getReturnType());
-                            serializeState = m;
-                            break;
+                            if (m.getReturnType() == String.class) {
+                                serializeState = m;
+                                break;
+                            }
                         } catch (Throwable ignored) {
                         }
+                    }
+                }
+                // Direct serializer: same output as vanilla serialize(), but
+                // built from stable Block/StateHolder/Property/Holder API only.
+                // Immune to BlockStateParser moves and to the 1.21.11+
+                // ResourceLocation -> Identifier rename (location() vs
+                // identifier() is resolved lazily at first use).
+                if (resolved && worldGetChunk != null && chunkGetBlockState != null) {
+                    try {
+                        Class<?> stateClass = chunkGetBlockState.getReturnType();
+                        stateGetBlock = stateClass.getMethod("getBlock");
+                        blockHolder = stateGetBlock.getReturnType()
+                                .getMethod("builtInRegistryHolder");
+                        holderUnwrapKey = blockHolder.getReturnType()
+                                .getMethod("unwrapKey");
+                        stateGetProperties = stateClass.getMethod("getProperties");
+                        stateGetValues = stateClass.getMethod("getValues");
+                    } catch (Throwable ignored) {
+                        stateGetBlock = null;
                     }
                 }
                 resolved = true;
@@ -296,7 +348,8 @@ public final class RegionDiffRecorder {
                     .info("RegionDiff NMS resolver: world=" + (worldGetChunk != null ? worldGetChunk.getDeclaringClass().getSimpleName()
                             + "." + worldGetChunk.getName() : "none")
                             + " chunkBlockState=" + (chunkGetBlockState != null ? chunkGetBlockState.getName() : "none")
-                            + " serialize=" + (serializeState != null ? "ok" : "toString-fallback"));
+                            + " serialize=" + (serializeState != null ? "parser"
+                            : (stateGetBlock != null ? "direct" : "toString-fallback")));
         }
 
         static Object handle(World world) {
@@ -328,15 +381,96 @@ public final class RegionDiffRecorder {
 
         static String toStringSafe(Object state) {
             if (state == null) return "minecraft:air";
+            // 1) NMS BlockStateParser fast path (String-returning only).
             try {
                 if (serializeState != null) {
                     Object str = serializeState.invoke(null, state);
-                    if (str != null) return str.toString();
+                    if (str instanceof String s) return s;
                 }
-                return state.toString();
+            } catch (Throwable ignored) {
+            }
+            // 2) Direct serializer: byte-identical format to vanilla
+            // serialize(), no command-parser dependency.
+            try {
+                String direct = directSerialize(state);
+                if (direct != null) return direct;
+            } catch (Throwable ignored) {
+            }
+            // 3) Last resort: whatever the state prints as.
+            try {
+                String raw = state.toString();
+                return raw != null ? raw : "minecraft:air";
             } catch (Throwable t) {
                 return "minecraft:air";
             }
+        }
+
+        /**
+         * Builds "minecraft:id" or "minecraft:id[prop=val,...]" exactly like
+         * vanilla BlockStateParser.serialize(): block id from the block's
+         * registry holder key, then StateHolder property entries rendered via
+         * Property.getName()/getName(value). Reads immutable state only, so it
+         * is safe to call from the background diff thread.
+         */
+        private static String directSerialize(Object state) throws Exception {
+            if (stateGetBlock == null || blockHolder == null || holderUnwrapKey == null
+                    || stateGetProperties == null || stateGetValues == null) {
+                throw new IllegalStateException("direct serializer unresolved");
+            }
+            Object block = stateGetBlock.invoke(state);
+            Object holder = blockHolder.invoke(block);
+            @SuppressWarnings("unchecked")
+            java.util.Optional<Object> key =
+                    (java.util.Optional<Object>) holderUnwrapKey.invoke(holder);
+            String id;
+            if (key == null || key.isEmpty()) {
+                id = "minecraft:air";
+            } else {
+                Object rk = key.get();
+                java.lang.reflect.Method loc = keyLocation;
+                if (loc == null) {
+                    // 1.21.5 and earlier: ResourceKey.location();
+                    // 1.21.11+: renamed to ResourceKey.identifier().
+                    try {
+                        loc = rk.getClass().getMethod("location");
+                    } catch (NoSuchMethodException e) {
+                        loc = rk.getClass().getMethod("identifier");
+                    }
+                    keyLocation = loc;
+                }
+                Object idObj = loc.invoke(rk);
+                id = idObj != null ? idObj.toString() : "minecraft:air";
+            }
+            Object propsObj = stateGetProperties.invoke(state);
+            if (!(propsObj instanceof java.util.Collection<?> props) || props.isEmpty()) {
+                return id;
+            }
+            Object valuesObj = stateGetValues.invoke(state);
+            if (!(valuesObj instanceof java.util.Map<?, ?> values) || values.isEmpty()) {
+                return id;
+            }
+            StringBuilder sb = new StringBuilder(id);
+            sb.append('[');
+            boolean first = true;
+            for (java.util.Map.Entry<?, ?> e : values.entrySet()) {
+                Object prop = e.getKey();
+                Object value = e.getValue();
+                java.lang.reflect.Method nameM = propName;
+                java.lang.reflect.Method valueNameM = propValueName;
+                if (nameM == null) {
+                    nameM = prop.getClass().getMethod("getName");
+                    valueNameM = prop.getClass().getMethod("getName", Comparable.class);
+                    propName = nameM;
+                    propValueName = valueNameM;
+                }
+                if (!first) sb.append(',');
+                sb.append(nameM.invoke(prop));
+                sb.append('=');
+                sb.append(valueNameM.invoke(prop, value));
+                first = false;
+            }
+            sb.append(']');
+            return sb.toString();
         }
     }
 }
