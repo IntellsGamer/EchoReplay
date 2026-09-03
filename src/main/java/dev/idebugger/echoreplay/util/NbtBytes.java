@@ -24,12 +24,26 @@ public final class NbtBytes {
 
     private static final String ANCHOR = "org.bukkit.block.RespawnAnchor";
 
-    private static boolean isRespawnAnchor(Object state) {
+    /**
+     * Resolved exactly once. {@code Class.forName} must never run per block:
+     * this method executes on the server thread for every recorded block, and
+     * on Paper/Purpur each lookup passes through the reflection remapper plus
+     * a full jar/classpath scan on a miss (the interface does not exist in the
+     * Bukkit API - only the BlockData variant does). Per-call misses stall the
+     * tick loop into watchdog hangs, so the result is cached forever.
+     */
+    private static final Class<?> ANCHOR_CLASS = loadAnchorClass();
+
+    private static Class<?> loadAnchorClass() {
         try {
-            return state != null && Class.forName(ANCHOR).isInstance(state);
-        } catch (ClassNotFoundException e) {
-            return false;
+            return Class.forName(ANCHOR);
+        } catch (ClassNotFoundException | LinkageError e) {
+            return null;
         }
+    }
+
+    private static boolean isRespawnAnchor(Object state) {
+        return state != null && ANCHOR_CLASS != null && ANCHOR_CLASS.isInstance(state);
     }
 
     private static int getAnchorCharges(Object state) {
