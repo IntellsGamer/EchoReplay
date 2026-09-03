@@ -25,6 +25,12 @@ replay:
   physics-frozen: true
   skip-sfx-when-speed-above: 2.0
   default-speed: 1.0
+  border:
+    enabled: true
+    particle: END_ROD
+    interval-ticks: 4
+    step: 2.0
+    max-per-frame: 300
   snapshot:
     blocks-per-tick: 8000
 storage:

@@ -57,6 +57,9 @@ public final class ReplaySession {
     private final Map<Integer, Integer> dyingRuntimes = new HashMap<>();
     private static final int DEATH_DELAY_TICKS = 22;
 
+    // Playback border particles: throttling counter, per-session.
+    private int borderTickCounter = 0;
+
     private boolean started = false;
     private boolean stopping = false;
     private double skipSfxAbove = 2.0;
@@ -239,6 +242,7 @@ public final class ReplaySession {
         started = true;
         stopping = false;
         appliedIndex = 0;
+        borderTickCounter = 0;
         // Capture the region's pre-playback terrain (once) so we can restore it
         // when playback ends, before the recorded snapshot wipes it.
         if (!virtual && !liveCaptured) {
@@ -268,6 +272,16 @@ public final class ReplaySession {
         if (!virtual && liveCaptured) {
             restoreLiveTerrain();
         }
+    }
+
+    /** Public view of the current playback viewers (for border particles and external use). */
+    public List<Player> liveViewersPublic() {
+        return liveViewers();
+    }
+
+    /** Returns true when the border should render on this tick (throttling). */
+    public boolean shouldRenderBorder(int interval) {
+        return (borderTickCounter++ % Math.max(1, interval)) == 0;
     }
 
     private List<Player> liveViewers() {

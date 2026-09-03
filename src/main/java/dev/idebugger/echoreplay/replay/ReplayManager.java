@@ -53,6 +53,8 @@ public final class ReplayManager implements Listener {
     public void onTick() {
         if (session != null) {
             boolean finished = session.tick();
+            // Playback border: client-side wireframe around the region, per-viewer toggle.
+            PlaybackBorderRenderer.tick(session);
             if (finished) {
                 // Playback reached the end: restore terrain + unlock, end session.
                 stopPlay(false);

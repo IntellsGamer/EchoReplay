@@ -88,6 +88,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "rename" -> rename(sender, args);
             case "confirm" -> confirm(sender);
             case "marker" -> marker(sender, args);
+            case "border" -> border(sender, args);
             default -> {
                 sender.sendMessage(Text.mm("<red>Unknown subcommand '" + sub + "'. Use /er for help.</red>"));
             }
@@ -110,6 +111,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>Record:</gray> <yellow>/er record <name>, stop, cancel, save, status, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
+            <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
             """));
     }
 
@@ -499,6 +501,47 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         s.sendMessage(Text.mm("<gray>Marker '" + name + "' placed.</gray>"));
     }
 
+    private void border(CommandSender s, String[] args) {
+        requirePlayer(s, p -> {
+            var prefs = plugin.borderPrefs();
+            if (prefs == null) {
+                p.sendMessage(Text.mm("<red>Border preferences not loaded yet.</red>"));
+                return;
+            }
+            if (args.length == 1) {
+                boolean newState = prefs.toggle(p.getUniqueId());
+                p.sendMessage(Text.mm(newState
+                        ? "<green>Playback border particles enabled for you.</green>"
+                        : "<gray>Playback border particles disabled for you.</gray>"));
+                return;
+            }
+            String arg = args[1].toLowerCase();
+            switch (arg) {
+                case "on", "enable", "enabled", "true" -> {
+                    prefs.setEnabled(p.getUniqueId(), true);
+                    p.sendMessage(Text.mm("<green>Playback border particles enabled for you.</green>"));
+                }
+                case "off", "disable", "disabled", "false" -> {
+                    prefs.setEnabled(p.getUniqueId(), false);
+                    p.sendMessage(Text.mm("<gray>Playback border particles disabled for you.</gray>"));
+                }
+                case "toggle" -> {
+                    boolean newState = prefs.toggle(p.getUniqueId());
+                    p.sendMessage(Text.mm(newState
+                            ? "<green>Playback border particles enabled for you.</green>"
+                            : "<gray>Playback border particles disabled for you.</gray>"));
+                }
+                case "status", "info", "state" -> {
+                    boolean enabled = prefs.isEnabled(p.getUniqueId());
+                    p.sendMessage(Text.mm(enabled
+                            ? "<gray>Playback border particles: <green>enabled</green>.</gray>"
+                            : "<gray>Playback border particles: <red>disabled</red>.</gray>"));
+                }
+                default -> p.sendMessage(Text.mm("<red>Usage: /er border [on|off|toggle|status]</red>"));
+            }
+        });
+    }
+
     private Double parseTime(String s) {
         if (s.contains(":")) {
             String[] parts = s.split(":");
@@ -529,7 +572,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "stop", "cancel", "save", "status", "play", "pause", "resume",
                 "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "list", "info",
-                "delete", "rename", "confirm", "marker");
+                "delete", "rename", "confirm", "marker", "border");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
             for (String s : subs) if (s.startsWith(args[0].toLowerCase())) out.add(s);
@@ -542,6 +585,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("speed")) {
             return Arrays.asList("0.25", "0.5", "1", "2", "4", "8", "16");
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("border")) {
+            return Arrays.asList("on", "off", "toggle", "status").stream()
+                    .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }
         return List.of();
     }

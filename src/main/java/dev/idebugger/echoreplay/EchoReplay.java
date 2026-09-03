@@ -4,6 +4,7 @@ import dev.idebugger.echoreplay.command.EchoCommand;
 import dev.idebugger.echoreplay.command.WandListener;
 import dev.idebugger.echoreplay.packet.PacketEventsSetup;
 import dev.idebugger.echoreplay.record.RecordingManager;
+import dev.idebugger.echoreplay.replay.PlaybackBorderPrefs;
 import dev.idebugger.echoreplay.replay.ReplayManager;
 import dev.idebugger.echoreplay.select.SelectionManager;
 import dev.idebugger.echoreplay.storage.RecordingIndex;
@@ -29,6 +30,7 @@ public final class EchoReplay extends JavaPlugin {
     private final RecordingIndex recordingIndex = new RecordingIndex(new File(getDataFolder(), "recordings/index.yml"));
     private final RecordingManager recordingManager = new RecordingManager(this);
     private final ReplayManager replayManager = new ReplayManager(this);
+    private PlaybackBorderPrefs borderPrefs;
 
     private ExecutorService ioExecutor;
     private int tickTaskId = -1;
@@ -57,6 +59,7 @@ public final class EchoReplay extends JavaPlugin {
             return t;
         });
 
+        borderPrefs = new PlaybackBorderPrefs(new File(getDataFolder(), "border_prefs.yml"));
         recordingManager.onEnable(config);
         replayManager.onEnable(config);
 
@@ -103,6 +106,7 @@ public final class EchoReplay extends JavaPlugin {
     public RecordingIndex recordingIndex() { return recordingIndex; }
     public RecordingManager recordingManager() { return recordingManager; }
     public ReplayManager replayManager() { return replayManager; }
+    public PlaybackBorderPrefs borderPrefs() { return borderPrefs; }
     public ExecutorService ioExecutor() { return ioExecutor; }
 
     public FileConfiguration cfg() { return getConfig(); }

@@ -1,5 +1,5 @@
 name: EchoReplay
-version: 1.0.9
+version: 1.0.10
 main: dev.idebugger.echoreplay.EchoReplay
 api-version: '1.21'
 folia-supported: false
@@ -40,6 +40,9 @@ permissions:
     default: op
   echoreplay.watch:
     description: Auto-watch replays
+    default: true
+  echoreplay.border:
+    description: Toggle playback border particles
     default: true
   echoreplay.delete:
     description: Delete recordings
