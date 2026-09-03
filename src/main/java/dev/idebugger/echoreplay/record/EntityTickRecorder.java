@@ -156,6 +156,7 @@ public final class EntityTickRecorder {
                     int npc = s.npcIdFor(en.getKey());
                     long t = s.mediaMillis();
                     s.emit(new TimelineEvent.PlayerLeave(t, npc, 1));
+                    s.unmarkEntitySpawned(en.getKey());
                     it.remove();
                 }
             }

@@ -118,6 +118,10 @@ public final class RecordingSession {
         return entitySpawned.add(uuid);
     }
 
+    public void unmarkEntitySpawned(UUID uuid) {
+        entitySpawned.remove(uuid);
+    }
+
     /** Clear the per-entity spawn bookkeeping when a fresh recording starts. */
     public void clearEntitySpawned() {
         entitySpawned.clear();

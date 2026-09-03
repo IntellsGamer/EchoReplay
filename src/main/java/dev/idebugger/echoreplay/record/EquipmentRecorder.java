@@ -16,8 +16,8 @@ import org.bukkit.inventory.EquipmentSlot;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Captures outgoing equipment packets (via Bukkit event hooks) for players in
@@ -27,7 +27,7 @@ import java.util.Set;
 public final class EquipmentRecorder implements Listener {
 
     private final EchoReplay plugin;
-    private final Set<String> lastEquipmentKeys = new HashSet<>();
+    private final Map<Integer, Map<Integer, String>> lastEquipmentKey = new HashMap<>();
 
     public EquipmentRecorder(EchoReplay plugin) {
         this.plugin = plugin;
@@ -57,11 +57,13 @@ public final class EquipmentRecorder implements Listener {
     }
 
     private void emitIfChanged(RecordingSession s, int npcId, int slot, org.bukkit.inventory.ItemStack item) {
-        String key = npcId + ":" + slot + ":" + (item == null ? "AIR" : item.getType().name() + item.getAmount());
-        if (lastEquipmentKeys.add(key)) {
-            byte[] bytes = serializeItem(item);
-            s.emit(new TimelineEvent.Equipment(s.mediaMillis(), npcId, slot, bytes));
-        }
+        Map<Integer, String> playerKeys = lastEquipmentKey.computeIfAbsent(npcId, k -> new HashMap<>());
+        String key = item == null || item.getType() == org.bukkit.Material.AIR ? "AIR" : item.getType().name() + ":" + item.getAmount();
+        String lastKey = playerKeys.get(slot);
+        if (key.equals(lastKey)) return;
+        playerKeys.put(slot, key);
+        byte[] bytes = serializeItem(item);
+        s.emit(new TimelineEvent.Equipment(s.mediaMillis(), npcId, slot, bytes));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
