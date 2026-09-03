@@ -404,7 +404,14 @@ public final class ReplaySession {
             if (!spawnMeta.isEmpty()) {
                 java.util.List<EntityData<?>> data = new ArrayList<>();
                 for (int[] entry : spawnMeta) {
-                    data.add(new EntityData<>(entry[0], EntityDataTypes.INT, entry[1]));
+                    int idx = entry[0];
+                    int kind = entry[1];
+                    int value = entry[2];
+                    if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BYTE) {
+                        data.add(new EntityData<>(idx, EntityDataTypes.BYTE, (byte) value));
+                    } else {
+                        data.add(new EntityData<>(idx, EntityDataTypes.INT, value));
+                    }
                 }
                 fakes.setMetadata(p, runtime, data);
             }

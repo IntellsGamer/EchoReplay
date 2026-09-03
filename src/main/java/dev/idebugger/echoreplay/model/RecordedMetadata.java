@@ -15,16 +15,24 @@ import java.util.List;
  *
  * Only the fields that CANNOT be inferred from the entity type alone are stored
  * (currently baby-age and slime/magma-cube size):
- *   - baby:      metadata index 15, var-int, negative = baby
- *   - slime size: metadata index 16, var-int, 1..127 = size
+ *   - passive ageable mobs:     metadata index 15, INT var-int, negative = baby
+ *   - zombie-family mobs:       metadata index 15, BYTE (1 = baby, 0 = adult)
+ *   - slime / magma cube size:  metadata index 16, INT var-int, 1..127 = size
+ *
+ * The metadata TYPE (INT vs BYTE) matters: zombies crash the client if given an
+ * INT at index 15, so each entry records which PacketEvents type to send.
  *
  * Blob layout (DataOutputStream):
- *   byte count, then count x (byte index, int value)
+ *   byte count, then count x (byte index, byte type, int value),
+ *   type: 1 = INT, 2 = BYTE
  */
 public final class RecordedMetadata {
 
     public static final int AGE_INDEX = 15;
     public static final int SLIME_SIZE_INDEX = 16;
+
+    public static final int TYPE_INT = 1;
+    public static final int TYPE_BYTE = 2;
 
     private RecordedMetadata() {}
 
@@ -37,14 +45,22 @@ public final class RecordedMetadata {
         DataOutputStream out = new DataOutputStream(bos);
         int count = 0;
         try {
-            if (e instanceof org.bukkit.entity.Ageable a && !a.isAdult()) {
-                out.writeByte(AGE_INDEX);
-                out.writeInt(-24000);
-                count++;
-            }
             if (e instanceof org.bukkit.entity.Slime slime) {
                 out.writeByte(SLIME_SIZE_INDEX);
+                out.writeByte(TYPE_INT);
                 out.writeInt(slime.getSize());
+                count++;
+            } else if (e instanceof org.bukkit.entity.Zombie) {
+                // Undead ageables store baby-ness as a BYTE boolean at index 15.
+                // Sending an INT here crashes the client, so always use TYPE_BYTE.
+                out.writeByte(AGE_INDEX);
+                out.writeByte(TYPE_BYTE);
+                out.writeInt(1);
+                count++;
+            } else if (e instanceof org.bukkit.entity.Ageable a && !a.isAdult()) {
+                out.writeByte(AGE_INDEX);
+                out.writeByte(TYPE_INT);
+                out.writeInt(-24000);
                 count++;
             }
         } catch (IOException ignored) {
@@ -58,21 +74,22 @@ public final class RecordedMetadata {
         return blob;
     }
 
-    /** Returns the list of [index, int value] metadata entries to apply. */
+    /** Returns the list of [index, type, value] metadata entries to apply. */
     public static List<int[]> decode(byte[] blob) {
         List<int[]> out = new ArrayList<>();
         if (blob == null || blob.length < 1) return out;
         int count = blob[0] & 0xFF;
         int p = 1;
         for (int i = 0; i < count; i++) {
-            if (p + 5 > blob.length) break;
+            if (p + 6 > blob.length) break;
             int index = blob[p] & 0xFF;
-            int value = ((blob[p + 1] & 0xFF) << 24)
-                    | ((blob[p + 2] & 0xFF) << 16)
-                    | ((blob[p + 3] & 0xFF) << 8)
-                    | (blob[p + 4] & 0xFF);
-            out.add(new int[]{index, value});
-            p += 5;
+            int type = blob[p + 1] & 0xFF;
+            int value = ((blob[p + 2] & 0xFF) << 24)
+                    | ((blob[p + 3] & 0xFF) << 16)
+                    | ((blob[p + 4] & 0xFF) << 8)
+                    | (blob[p + 5] & 0xFF);
+            out.add(new int[]{index, type, value});
+            p += 6;
         }
         return out;
     }
