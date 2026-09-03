@@ -524,12 +524,19 @@ public final class ReplaySession {
     private void onDamage(TimelineEvent.Damage d) {
         Integer runtime = stableToRuntime.get(d.npcId());
         if (runtime == null) return;
-        // yaw roughly from the damage source direction; record stores the attacker
-        // source string but not a heading, so center the flash straight-on.
-        var anim = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHurtAnimation(
-                runtime, 0f);
+        // yaw 0 = straight-on hurt flash.
+        var hurt = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerHurtAnimation(runtime, 0f);
+        // Also send the full damage event (sets hurt time / red tint on the client)
+        // using the shared "mob attack" source so both players and mobs flash.
+        var dmg = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDamageEvent(
+                runtime,
+                com.github.retrooper.packetevents.protocol.world.damagetype.DamageTypes.MOB_ATTACK,
+                0, 0, null);
         for (Player p : liveViewers()) {
-            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(p, anim);
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                    .sendPacket(p, hurt);
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                    .sendPacket(p, dmg);
         }
     }
 
@@ -573,7 +580,11 @@ public final class ReplaySession {
         nameByStable.remove(stableId);
         if (runtime == null) return;
         for (Player p : liveViewers()) {
-            fakes.entityStatus(p, runtime, 3); // death animation (client collapses the mob)
+            fakes.entityStatus(p, runtime, 3); // death status
+            // Force the client to render the entity as fallen/dying via pose.
+            fakes.setMetadata(p, runtime, java.util.List.of(
+                    new EntityData<>(6, EntityDataTypes.ENTITY_POSE,
+                            com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.DYING)));
         }
         dyingRuntimes.put(runtime, DEATH_DELAY_TICKS);
     }

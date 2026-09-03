@@ -58,11 +58,14 @@ public final class EntityRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Entity ent = e.getEntity();
-        if (ent instanceof Player) return;
+        // PlayerDeathEvent IS-AN EntityDeathEvent, so this covers players too.
         if (!ent.getWorld().getUID().equals(s.world().getUID())) return;
-        int npc = s.npcIdFor(ent.getUniqueId());
-        s.emit(new TimelineEvent.Death(s.mediaMillis(), npc));
-        s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
+        if (s.cuboid().contains(ent.getLocation().getBlockX(),
+                ent.getLocation().getBlockY(), ent.getLocation().getBlockZ())) {
+            int npc = s.npcIdFor(ent.getUniqueId());
+            s.emit(new TimelineEvent.Death(s.mediaMillis(), npc));
+            s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
