@@ -90,8 +90,9 @@ public final class TimelineCodec {
                 out.writeLong(p.uuid().getMostSignificantBits());
                 out.writeLong(p.uuid().getLeastSignificantBits());
                 Io.writeUtf(out, p.name());
-                Io.writeUtf(out, p.skin().value() == null ? "" : p.skin().value());
-                Io.writeUtf(out, p.skin().signature() == null ? "" : p.skin().signature());
+                var skin = p.skin();
+                Io.writeUtf(out, skin == null || skin.value() == null ? "" : skin.value());
+                Io.writeUtf(out, skin == null || skin.signature() == null ? "" : skin.signature());
                 out.writeDouble(p.pos().x());
                 out.writeDouble(p.pos().y());
                 out.writeDouble(p.pos().z());
