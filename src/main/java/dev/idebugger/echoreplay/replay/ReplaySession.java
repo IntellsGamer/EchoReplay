@@ -233,6 +233,18 @@ public final class ReplaySession {
         return new ArrayList<>(viewers);
     }
 
+    /** Explicit viewers only (play starter + /er watchers): online players
+     *  who opted in. Unlike liveViewers(), this excludes nearby auto-watch
+     *  bystanders — used for chat and anything else that must not leak. */
+    private List<Player> explicitViewers() {
+        List<Player> out = new ArrayList<>();
+        for (UUID id : viewers) {
+            Player p = Bukkit.getPlayer(id);
+            if (p != null && p.isOnline() && !out.contains(p)) out.add(p);
+        }
+        return out;
+    }
+
     // --- Camera: per-player live follow of a recorded entity -------------
     private final Map<UUID, Integer> camStable = new HashMap<>();
     private final Map<UUID, org.bukkit.GameMode> camPrevMode = new HashMap<>();
@@ -1797,26 +1809,29 @@ public final class ReplaySession {
         } catch (Exception ex) {
             msg = net.kyori.adventure.text.Component.text(c.json());
         }
-        net.kyori.adventure.text.Component full;
-        if (name == null || name.isEmpty()) {
-            full = msg.colorIfAbsent(net.kyori.adventure.text.format.NamedTextColor.WHITE);
-        } else {
-            full = net.kyori.adventure.text.Component.text()
-                    .append(net.kyori.adventure.text.Component.text("<" + name + ">")
-                            .color(net.kyori.adventure.text.format.NamedTextColor.WHITE))
-                    .append(net.kyori.adventure.text.Component.space())
-                    .append(msg.colorIfAbsent(net.kyori.adventure.text.format.NamedTextColor.WHITE))
-                    .build();
-        }
+        // VCR tag so recorded chat is never mistaken for live chat:
+        // gray "VCR <player>", dark-gray », white message.
+        net.kyori.adventure.text.Component full = net.kyori.adventure.text.Component.text()
+                .append(net.kyori.adventure.text.Component.text(
+                                "VCR " + (name == null || name.isEmpty() ? "?" : name))
+                        .color(net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                .append(net.kyori.adventure.text.Component.space())
+                .append(net.kyori.adventure.text.Component.text("»")
+                        .color(net.kyori.adventure.text.format.NamedTextColor.DARK_GRAY))
+                .append(net.kyori.adventure.text.Component.space())
+                .append(msg.colorIfAbsent(net.kyori.adventure.text.format.NamedTextColor.WHITE))
+                .build();
         String json;
         try {
             json = net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson().serialize(full);
         } catch (Exception ex) {
             String plain = net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer.plainText()
                     .serialize(msg);
-            json = "{\"text\":\"" + (name == null ? "" : "<" + name + "> ") + plain + "\",\"color\":\"white\"}";
+            json = "{\"text\":\"VCR " + (name == null ? "" : name) + " » " + plain + "\",\"color\":\"white\"}";
         }
-        for (Player p : tickViewers) {
+        // Recorded chat goes ONLY to explicit viewers (play starter +
+        // /er watchers) — nearby auto-watch bystanders must not see it.
+        for (Player p : explicitViewers()) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p,
                             new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSystemChatMessage(

@@ -122,9 +122,10 @@ public final class EchoReplay extends JavaPlugin {
     private void onTick() {
         recordingManager.onTick();
         replayManager.onTick();
-        // Selection outline particles, throttled to every 10th tick.
+        // Region outlines, throttled to every 10th tick.
         if ((++outlineCounter % 10) == 0) {
             renderSelectionOutlines();
+            renderRecordingOutline();
         }
     }
 
@@ -141,30 +142,76 @@ public final class EchoReplay extends JavaPlugin {
             if (borderPrefs != null && !borderPrefs.isEnabled(p.getUniqueId())) continue;
             dev.idebugger.echoreplay.select.Selection sel = selectionManager.getIfExists(p);
             if (sel == null || !sel.isComplete()) continue;
-            dev.idebugger.echoreplay.select.Cuboid c = sel.cuboid();
-            org.bukkit.Location loc = p.getLocation();
-            // Skip viewers far away: particle packets would just be dropped
-            // and the loop would still cost CPU.
-            double dx = Math.max(c.min().x() - loc.getBlockX(), Math.max(loc.getBlockX() - c.max().x(), 0));
-            double dy = Math.max(c.min().y() - loc.getBlockY(), Math.max(loc.getBlockY() - c.max().y(), 0));
-            double dz = Math.max(c.min().z() - loc.getBlockZ(), Math.max(loc.getBlockZ() - c.max().z(), 0));
-            if (dx * dx + dy * dy + dz * dz > 80 * 80) continue;
-            int[] budget = {512};
-            org.bukkit.Particle part = org.bukkit.Particle.END_ROD;
-            for (int axis = 0; axis < 3; axis++) {
-                for (int ox = 0; ox < 2; ox++) {
-                    for (int oz = 0; oz < 2; oz++) {
-                        outlineEdge(p, part, c, axis, ox, oz, budget);
-                    }
+            renderWireframe(p, sel.cuboid());
+        }
+    }
+
+    /**
+     * END_ROD wireframe around the actively recording cuboid, shown to nearby
+     * players in the same world while a recording runs. Gated only by the
+     * personal border toggle (/er border) — unlike the selection outline,
+     * this one is always on unless the player opted out.
+     */
+    private void renderRecordingOutline() {
+        dev.idebugger.echoreplay.record.RecordingSession s;
+        try {
+            s = recordingManager.activeSession();
+        } catch (Exception ignored) {
+            return;
+        }
+        if (s == null) return;
+        dev.idebugger.echoreplay.record.RecordingSession.State st;
+        try {
+            st = s.state();
+        } catch (Exception ignored) {
+            return;
+        }
+        if (st != dev.idebugger.echoreplay.record.RecordingSession.State.SNAPSHOTTING
+                && st != dev.idebugger.echoreplay.record.RecordingSession.State.RECORDING) return;
+        dev.idebugger.echoreplay.select.Cuboid c = s.cuboid();
+        org.bukkit.World w = s.world();
+        if (c == null || w == null) return;
+        for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+            if (borderPrefs != null && !borderPrefs.isEnabled(p.getUniqueId())) continue;
+            try {
+                if (!p.getWorld().getUID().equals(w.getUID())) continue;
+            } catch (Exception ignored) {
+                continue;
+            }
+            renderWireframe(p, c);
+        }
+    }
+
+    /** Budget-capped wireframe for one player around one cuboid (80-block cull). */
+    private static void renderWireframe(org.bukkit.entity.Player p,
+                                        dev.idebugger.echoreplay.select.Cuboid c) {
+        org.bukkit.Location loc;
+        try {
+            loc = p.getLocation();
+        } catch (Exception ignored) {
+            return;
+        }
+        // Skip viewers far away: particle packets would just be dropped
+        // and the loop would still cost CPU.
+        double dx = Math.max(c.min().x() - loc.getBlockX(), Math.max(loc.getBlockX() - c.max().x(), 0));
+        double dy = Math.max(c.min().y() - loc.getBlockY(), Math.max(loc.getBlockY() - c.max().y(), 0));
+        double dz = Math.max(c.min().z() - loc.getBlockZ(), Math.max(loc.getBlockZ() - c.max().z(), 0));
+        if (dx * dx + dy * dy + dz * dz > 80 * 80) return;
+        int[] budget = {512};
+        org.bukkit.Particle part = org.bukkit.Particle.END_ROD;
+        for (int axis = 0; axis < 3; axis++) {
+            for (int ox = 0; ox < 2; ox++) {
+                for (int oz = 0; oz < 2; oz++) {
+                    outlineEdge(p, part, c, axis, ox, oz, budget);
                 }
             }
         }
     }
 
     /** One cuboid edge: the axis coordinate runs min→max, the others fixed. */
-    private void outlineEdge(org.bukkit.entity.Player p, org.bukkit.Particle part,
-                             dev.idebugger.echoreplay.select.Cuboid c,
-                             int axis, int i, int j, int[] budget) {
+    private static void outlineEdge(org.bukkit.entity.Player p, org.bukkit.Particle part,
+                              dev.idebugger.echoreplay.select.Cuboid c,
+                              int axis, int i, int j, int[] budget) {
         double from, to;
         double fx = 0, fy = 0, fz = 0;
         if (axis == 0) { // X runs; i fixes Y, j fixes Z
