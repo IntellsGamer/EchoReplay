@@ -199,11 +199,15 @@ public final class ReplaySession {
         viewers.remove(p.getUniqueId());
         pendingSyncs.remove(p.getUniqueId());
         syncedStablesFor.remove(p.getUniqueId());
-        // If they were spectating, the fake takes the place back (the player
-        // is offline or leaving the replay, so no state restore is needed).
+        // If they were spectating, put their own state back (inventory/vitals
+        // are still settable during the quit event — teleport is a no-op then)
+        // and hand the place back to the fake for the remaining viewers.
         Integer stable = spectateStable.remove(p.getUniqueId());
-        spectateSave.remove(p.getUniqueId());
-        if (stable != null) maybeRespawnSpectatedFake(stable);
+        SpectateSave save = spectateSave.remove(p.getUniqueId());
+        if (stable != null) {
+            restoreSpectate(p, save);
+            maybeRespawnSpectatedFake(stable);
+        }
         restoreForcedMode(p);
     }
 
@@ -334,6 +338,8 @@ public final class ReplaySession {
         // Must still be alive (entityPoses is cleared on death/leave).
         if (stable == null || !entityPoses.containsKey(stable)) return false;
         if (spectateStable.containsKey(p.getUniqueId())) return true;
+        // Cam would fight the spectate driver over the same player's teleports.
+        stopCamera(p);
         if (!viewers.contains(p.getUniqueId())) viewers.add(p.getUniqueId());
 
         // Save the player's real state for restoration.
@@ -1705,6 +1711,8 @@ public final class ReplaySession {
 
     /** Send a destroy packet to exactly the players this fake entity was spawned for. */
     private void destroyFor(int runtimeId) {
+        runtimeFlags.remove(runtimeId);
+        runtimePose.remove(runtimeId);
         Set<UUID> ids = spawnedFor.remove(runtimeId);
         if (ids == null) return;
         for (UUID id : ids) {
