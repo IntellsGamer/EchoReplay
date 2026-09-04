@@ -415,7 +415,10 @@ public final class ReplaySession {
             applyInventoryToPlayer(p, recInv);
         } else {
             byte[][] eq = lastEquipmentByStable.get(stable);
-            if (eq != null) applyInventoryToPlayer(p, equipmentAsInventory(eq));
+            if (eq != null) {
+                Integer heldNow = lastHeldSlotByStable.get(stable);
+                applyInventoryToPlayer(p, equipmentAsInventory(eq, heldNow != null ? heldNow : 0));
+            }
         }
         Integer held = lastHeldSlotByStable.get(stable);
         if (held != null) {
@@ -700,12 +703,14 @@ public final class ReplaySession {
         return h;
     }
 
-    /** Map a 6-slot equipment array (main/off/boots/legs/chest/helmet) to the 41-slot layout. */
-    private static byte[][] equipmentAsInventory(byte[][] eq) {
+    /** Map a 6-slot equipment array (main/off/boots/legs/chest/helmet) to the 41-slot layout.
+     *  The main-hand item lives in the recorded held hotbar slot, not slot 0. */
+    private static byte[][] equipmentAsInventory(byte[][] eq, int heldSlot) {
         byte[][] out = new byte[41][];
         for (int i = 0; i < 41; i++) out[i] = new byte[0];
         if (eq == null) return out;
-        if (eq.length > 0 && eq[0] != null) out[0] = eq[0];        // main hand -> hotbar slot 0
+        int main = (heldSlot >= 0 && heldSlot <= 8) ? heldSlot : 0;
+        if (eq.length > 0 && eq[0] != null) out[main] = eq[0];       // main hand -> held hotbar slot
         if (eq.length > 1 && eq[1] != null) out[40] = eq[1];       // offhand
         if (eq.length > 2 && eq[2] != null) out[36] = eq[2];       // boots
         if (eq.length > 3 && eq[3] != null) out[37] = eq[3];       // leggings
@@ -1749,10 +1754,10 @@ public final class ReplaySession {
         }
         if (eq.slot() >= 0 && eq.slot() < 6) cached[eq.slot()] = eq.item();
 
-        // First-person spectate: the gear change lands in the real hotbar.
+        // First-person spectate: the gear change lands in the recorded hotbar slot.
         Player sp = spectatorOf(eq.npcId());
         if (sp != null) {
-            applyEquipmentSlotToPlayer(sp, eq.slot(), eq.item());
+            applyEquipmentSlotToPlayer(sp, eq.npcId(), eq.slot(), eq.item());
         }
 
         Integer runtime = stableToRuntime.get(eq.npcId());
@@ -1777,13 +1782,22 @@ public final class ReplaySession {
         }
     }
 
-    /** Apply one recorded equipment slot (0-5) to a real player's inventory. */
-    private void applyEquipmentSlotToPlayer(Player p, int slot, byte[] item) {
+    /** Apply one recorded equipment slot (0-5) to a real player's inventory.
+     *  Slot 0 (main hand) is written into the <em>recorded</em> held hotbar
+     *  slot — never the spectator's currently selected one — so a main-hand
+     *  update arriving before its held-slot update can't corrupt the wrong
+     *  hotbar slot. */
+    private void applyEquipmentSlotToPlayer(Player p, int stableId, int slot, byte[] item) {
         try {
             var stack = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(item);
             org.bukkit.inventory.PlayerInventory inv = p.getInventory();
             switch (slot) {
-                case 0 -> inv.setItemInMainHand(stack);
+                case 0 -> {
+                    Integer held = lastHeldSlotByStable.get(stableId);
+                    int target = (held != null && held >= 0 && held <= 8) ? held : inv.getHeldItemSlot();
+                    if (target < 0 || target > 8) target = inv.getHeldItemSlot();
+                    inv.setItem(target, stack);
+                }
                 case 1 -> inv.setItemInOffHand(stack);
                 default -> {
                     org.bukkit.inventory.ItemStack[] armor = inv.getArmorContents();
