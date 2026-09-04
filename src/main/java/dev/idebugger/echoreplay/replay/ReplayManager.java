@@ -243,6 +243,25 @@ public final class ReplayManager implements Listener {
         }
     }
 
+    // --- Spectator immunity: a first-person spectator's real body walks
+    //     through the live world, where outside mobs and hazards can hit it.
+    //     Damage and hunger drain are cancelled outright, and the per-tick
+    //     driver pins health/hunger to the recording — hits do nothing. ---
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectateDamage(org.bukkit.event.entity.EntityDamageEvent e) {
+        if (!(e.getEntity() instanceof org.bukkit.entity.Player p)) return;
+        ReplaySession s = session;
+        if (s != null && s.isSpectating(p)) e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectateFood(org.bukkit.event.entity.FoodLevelChangeEvent e) {
+        if (!(e.getEntity() instanceof org.bukkit.entity.Player p)) return;
+        ReplaySession s = session;
+        if (s != null && s.isSpectating(p)) e.setCancelled(true);
+    }
+
     /** True while a world-mode replay is locking this block's location. */
     private boolean isLocked(org.bukkit.block.Block b) {
         return session != null && !session.virtual()

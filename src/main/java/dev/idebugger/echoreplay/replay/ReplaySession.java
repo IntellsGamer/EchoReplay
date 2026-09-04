@@ -641,6 +641,11 @@ public final class ReplaySession {
                         pose.pos().x(), pose.pos().y(), pose.pos().z(),
                         pose.rot().headYaw(), pose.rot().pitch()));
             } catch (Exception ignored) {}
+            // Pin health/hunger to the recording every tick: outside mobs and
+            // hazards can still hit the real body, and with damage cancelled
+            // (see ReplayManager guards) plus this lock, hits do nothing.
+            Vitals v = lastVitalsByStable.get(e.getValue());
+            if (v != null) applyVitalsToPlayer(p, v.health(), v.food(), v.saturation());
         }
     }
 
