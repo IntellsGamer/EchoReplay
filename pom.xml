@@ -6,12 +6,12 @@
 
     <groupId>com.echoreplay</groupId>
     <artifactId>echoreplay</artifactId>
-    <version>1.0.18</version>
+    <version>1.1.0</version>
     <packaging>pom</packaging>
 
     <name>EchoReplay</name>
     <description>Server-Side Region Replay for Paper. One shared source, one specialized jar per Minecraft version.</description>
-    <url>https://github.com/echoreplay/echoreplay</url>
+    <url>https://github.com/anantapunmagar/EchoReplay</url>
 
     <modules>
         <module>1.21.5</module>
@@ -103,9 +103,10 @@
                             </filters>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.echoreplay.EchoReplayPlugin</mainClass>
-                                </transformer>
+                                <!-- Q-2: removed bogus ManifestResourceTransformer with non-existent
+                                     mainClass com.echoreplay.EchoReplayPlugin. Bukkit uses plugin.yml
+                                     to find the main class, not the jar manifest, so this transformer
+                                     was harmless but misleading. -->
                             </transformers>
                         </configuration>
                     </execution>

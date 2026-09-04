@@ -36,6 +36,22 @@ public final class ActionRecorder implements Listener {
                 && s.cuboid().contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
     }
 
+    /**
+     * D-8.4: dedup per-npc swing events. v1 emitted an Animation(0) for
+     * LEFT_CLICK_AIR in onInteract AND ALSO picked up the same click via
+     * PlayerAnimationEvent.ARM_SWING in onAnimation — every left click
+     * replayed as two arm swings. Last-tick guard collapses them.
+     */
+    private final java.util.Map<Integer, Long> lastSwingTick = new java.util.HashMap<>();
+
+    private void emitSwing(RecordingSession s, int npc, int anim) {
+        long now = s.mediaMillis();
+        Long last = lastSwingTick.get(npc);
+        if (last != null && (now - last) < 50) return; // dedup within one tick
+        lastSwingTick.put(npc, now);
+        s.emit(new TimelineEvent.Animation(now, npc, anim));
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onAnimation(PlayerAnimationEvent e) {
         RecordingSession s = session();
@@ -47,7 +63,7 @@ public final class ActionRecorder implements Listener {
             case ARM_SWING -> 0;
             case OFF_ARM_SWING -> 1;
         };
-        s.emit(new TimelineEvent.Animation(s.mediaMillis(), npc, anim));
+        emitSwing(s, npc, anim);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -62,7 +78,10 @@ public final class ActionRecorder implements Listener {
             int hand = e.getHand() == EquipmentSlot.OFF_HAND ? 1 : 0;
             s.emit(new TimelineEvent.ItemUse(s.mediaMillis(), npc, hand, true));
         } else if (e.getAction() == Action.LEFT_CLICK_AIR) {
-            s.emit(new TimelineEvent.Animation(s.mediaMillis(), npc, 0));
+            // D-8.4: route through the dedup helper instead of emitting
+            // directly, so the onAnimation ARM_SWING event for the same
+            // click doesn't double up.
+            emitSwing(s, npc, 0);
         }
     }
 

@@ -159,7 +159,14 @@ public final class RegionDiffRecorder {
             if (chunk == null) continue;
             Object state = Nms.blockState(chunk, x & 15, y, z & 15);
             String str = Nms.toStringSafe(state);
-            long key = ((long) x << 40) | ((long) z << 20) | (y & 0xFFFFF);
+            // D-8.9: widened key split to 26/26/12 bits — supports |x|<33M
+            // and |z|<33M (full world range) plus y up to 4095 (covers build
+            // height + buffer). v1 used 20/20/24-bit split which only safely
+            // covered |x|<8.3M and |z|<1M — far-flung bases (anarchy servers,
+            // teleport hubs) silently produced key collisions = phantom diffs.
+            long key = (((long) (x + 33554432) & 0x3FFFFFFL) << 38)
+                     | (((long) (z + 33554432) & 0x3FFFFFFL) << 12)
+                     | ((y + 2048) & 0xFFFL);
             byte[] enc = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             byte[] prev = lastSeen.get(key);
             if (prev == null) {

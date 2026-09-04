@@ -47,16 +47,36 @@ public final class EchoReplay extends JavaPlugin {
         PacketEventsSetup.onLoad(this);
     }
 
+    /**
+     * Current state of the IO executor for /er stats. NEVER exposes the
+     * ExecutorService itself outside this class — external code submits
+     * via {@link #ioExecutor()} only.
+     */
+    public String ioExecutorStatus() {
+        if (ioExecutor == null) return "uninitialized";
+        if (ioExecutor.isShutdown()) return "shutdown";
+        if (ioExecutor.isTerminated()) return "terminated";
+        return "running";
+    }
+
     @Override
     public void onEnable() {
         PacketEventsSetup.onEnable();
 
         saveDefaultConfig();
+        // Config-version aware migration: log unknown keys so users stop
+        // editing values that do nothing (D-2). Reload-safe.
+        ConfigMigrator.warnUnknownKeys(this);
+        ConfigMigrator.migrate(this);
+
         FileConfiguration config = getConfig();
 
+        // S-6: non-daemon thread so the JVM cannot exit mid-flush during
+        // shutdown. Combined with awaitTermination in onDisable(), this
+        // guarantees a recording's final gzip write actually reaches disk.
         ioExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "echoreplay-io");
-            t.setDaemon(true);
+            t.setDaemon(false);
             return t;
         });
 
@@ -80,7 +100,10 @@ public final class EchoReplay extends JavaPlugin {
         tickTaskId = getServer().getScheduler()
                 .runTaskTimer(this, this::onTick, 1L, 1L).getTaskId();
 
-        Text.broadcast(Text.mm("<gray>EchoReplay <green>enabled</green>.</gray>"));
+        // D-8.6: do NOT broadcast plugin enable to every online player —
+        // players don't care and it trains people to ignore plugin chat.
+        // Console-only log keeps ops aware without spamming players.
+        getLogger().info("EchoReplay " + getDescription().getVersion() + " enabled.");
     }
 
     @Override
@@ -89,7 +112,7 @@ public final class EchoReplay extends JavaPlugin {
             getServer().getScheduler().cancelTask(tickTaskId);
             tickTaskId = -1;
         }
-        recordingManager.onDisable();
+        recordingManager.onDisable();   // schedules the final IO write
         replayManager.onDisable();
         if (movementListener != null) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(movementListener);
@@ -99,7 +122,25 @@ public final class EchoReplay extends JavaPlugin {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager().unregisterListener(outboundListener);
             outboundListener = null;
         }
-        if (ioExecutor != null) ioExecutor.shutdown();
+        // S-6: wait for in-flight IO work to actually finish before we let
+        // PacketEvents / Bukkit tear down. v1 returned immediately and the
+        // daemon thread was killed mid-gzip, corrupting the just-saved file.
+        if (ioExecutor != null) {
+            ioExecutor.shutdown();
+            try {
+                if (!ioExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    getLogger().warning("IO executor did not finish within 10s — "
+                            + "the last recording may be incomplete or missing.");
+                    ioExecutor.shutdownNow();
+                    // give it one more second to release file handles
+                    ioExecutor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS);
+                }
+            } catch (InterruptedException e) {
+                ioExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            ioExecutor = null;
+        }
         PacketEventsSetup.onDisable();
         INSTANCE.set(null);
     }

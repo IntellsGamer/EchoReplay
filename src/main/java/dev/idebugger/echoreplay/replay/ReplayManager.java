@@ -31,6 +31,16 @@ public final class ReplayManager implements Listener {
     private ReplaySession session;
     private boolean physicsFrozen = false;
 
+    /**
+     * S-3: atomic loading guard. Without this, two rapid /er play commands
+     * both pass the {@code session == null} check, both schedule decode on
+     * the IO thread, and the second one to land on the main thread orphans
+     * the first session permanently — leaving a snapshot-wiped region with
+     * no ticking session to ever restore it.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean loading =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public ReplayManager(EchoReplay plugin) {
         this.plugin = plugin;
     }
@@ -89,12 +99,21 @@ public final class ReplayManager implements Listener {
 
     public String play(Player sender, String name, boolean forceVirtual) {
         if (session != null) {
-            return "<red>A replay is already playing. Stop it first.</red>";
+            return "<red>A replay is already playing. Stop it first with /er stopplay.</red>";
+        }
+        // S-3: atomic end-to-end guard. compareAndSet returns false if another
+        // play() is already in flight, which is the exact race we need to block.
+        if (!loading.compareAndSet(false, true)) {
+            return "<gray>A replay is already loading — one moment.</gray>";
         }
         File file = new File(plugin.recordingManager().recordingsDir(), name + ".echoreplay.gz");
         if (!file.exists()) {
+            loading.set(false);
             return "<red>No recording named '" + name + "'.</red>";
         }
+        final String fName = name;
+        final boolean fVirtual = forceVirtual;
+        final Player fSender = sender;
         // Everything heavy (gzip inflate, timeline decode + sort, header
         // parse) runs on the IO thread. The main thread only does cheap
         // session assembly. Decoding the full timeline on the main thread
@@ -113,37 +132,53 @@ public final class ReplayManager implements Listener {
                         reader.blockSizeX(), reader.blockSizeY(), reader.blockSizeZ(),
                         reader.blockNbt(), timeline, meta);
             } catch (Exception e) {
+                plugin.getLogger().warning("Failed to read recording '" + fName + "': " + e);
                 return null;
             }
         }, plugin.ioExecutor()).thenAccept(decoded -> {
             if (decoded == null || decoded.meta() == null) {
-                if (sender != null) sender.sendMessage(Text.mm("<red>Failed to read recording.</red>"));
+                loading.set(false);
+                if (fSender != null && fSender.isOnline())
+                    fSender.sendMessage(Text.mm("<red>Failed to read recording '" + fName + "'.</red>"));
                 return;
             }
             plugin.getServer().getScheduler().runTask(plugin, () -> {
-                MetaParser.Parsed meta = decoded.meta();
-                World world = plugin.getServer().getWorld(meta.worldUuid());
-                if (world == null) world = plugin.getServer().getWorld(meta.worldName());
-                if (world == null) {
-                    if (sender != null) sender.sendMessage(Text.mm("<red>World for this recording is not loaded.</red>"));
-                    return;
-                }
-                boolean virtual = forceVirtual || plugin.cfg().getBoolean("replay.virtual-packets-only", false);
-                session = new ReplaySession(plugin, name, world, virtual, decoded);
-                // record snapshot restore (world mode) is applied within session
-                if (sender != null && sender.isOnline()) {
-                    session.addViewer(sender);
-                }
-                if (session.viewerIds().isEmpty()) {
-                    List<Player> nearby = world.getPlayers().stream().filter(p ->
-                            session.cuboid().contains(p.getLocation().getBlockX(),
-                                    p.getLocation().getBlockY(), p.getLocation().getBlockZ())).toList();
-                    for (Player p : nearby) {
-                        if (p.hasPermission("echoreplay.watch")) session.addViewer(p);
+                try {
+                    MetaParser.Parsed meta = decoded.meta();
+                    World world = plugin.getServer().getWorld(meta.worldUuid());
+                    if (world == null) world = plugin.getServer().getWorld(meta.worldName());
+                    if (world == null) {
+                        if (fSender != null && fSender.isOnline())
+                            fSender.sendMessage(Text.mm("<red>World for this recording is not loaded.</red>"));
+                        return;
                     }
+                    boolean virtual = fVirtual || plugin.cfg().getBoolean("replay.virtual-packets-only", false);
+                    session = new ReplaySession(plugin, fName, world, virtual, decoded);
+                    // record snapshot restore (world mode) is applied within session
+                    if (fSender != null && fSender.isOnline()) {
+                        session.addViewer(fSender);
+                    }
+                    if (session.viewerIds().isEmpty()) {
+                        List<Player> nearby = world.getPlayers().stream().filter(p ->
+                                session.cuboid().contains(p.getLocation().getBlockX(),
+                                        p.getLocation().getBlockY(), p.getLocation().getBlockZ())).toList();
+                        for (Player p : nearby) {
+                            if (p.hasPermission("echoreplay.watch")) session.addViewer(p);
+                        }
+                    }
+                    session.play();
+                    if (fSender != null && fSender.isOnline())
+                        fSender.sendMessage(Text.mm("<green>Playing '" + fName + "' in " + world.getName() + ".</green>"));
+                } catch (Throwable t) {
+                    plugin.getLogger().warning("Failed to start replay '" + fName + "': " + t);
+                    if (fSender != null && fSender.isOnline())
+                        fSender.sendMessage(Text.mm("<red>Failed to start replay: " + t.getMessage() + "</red>"));
+                } finally {
+                    // S-3: ALWAYS clear the loading guard, on every path —
+                    // success, world-not-found, or exception. A stuck guard
+                    // would block all future /er play commands.
+                    loading.set(false);
                 }
-                session.play();
-                if (sender != null) sender.sendMessage(Text.mm("<green>Playing '" + name + "' in " + world.getName() + ".</green>"));
             });
         });
         return null;
@@ -183,8 +218,12 @@ public final class ReplayManager implements Listener {
         if (session == null) return "<red>Nothing playing.</red>";
         String g = stoppingGuard();
         if (g != null) return g;
-        session.setSpeed(s);
-        return "<gray>Speed set to " + s + "x.</gray>";
+        try {
+            session.setSpeed(s);
+        } catch (IllegalArgumentException e) {
+            return "<red>" + e.getMessage() + "</red>";
+        }
+        return "<gray>Speed set to " + session.clock().speed() + "x.</gray>";
     }
 
     public String seek(double seconds) {
@@ -218,15 +257,10 @@ public final class ReplayManager implements Listener {
         String g = stoppingGuard();
         if (g != null) return g;
         session.addViewer(viewer);
-        // send current fake-entity state to this viewer
-        for (Map.Entry<Integer, Integer> e : sessionEntrySnapshot()) {
-            // re-send current entity spawn+pose (simplified: reseek render one-shot)
-        }
-        return "<green>You are now watching the replay.</green>";
-    }
-
-    private List<Map.Entry<Integer, Integer>> sessionEntrySnapshot() {
-        return new ArrayList<>();
+        // S-8: viewer catch-up is handled inside the session's per-tick loop —
+        // new viewers will receive the full current state on the next tick.
+        // (No more stub "re-send spawn packets" loop that did nothing.)
+        return "<green>You are now watching the replay. (Spawning current state…)</green>";
     }
 
     public String leave(Player p) {

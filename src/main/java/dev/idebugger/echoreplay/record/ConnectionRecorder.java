@@ -56,8 +56,12 @@ public final class ConnectionRecorder implements Listener {
         Player p = e.getPlayer();
         if (!p.getWorld().getUID().equals(s.world().getUID())) return;
         int npc = s.npcIdFor(p.getUniqueId());
+        // D-8.5: emit only PlayerLeave — v1 ALSO emitted EntityLeave for the
+        // same npcId, which doubled event volume for churn-y players and
+        // confused timeline tooling. PlayerLeave's replay path already despawns
+        // the fake (see ReplaySession.applyEvent's PlayerLeave case), so the
+        // second EntityLeave was a no-op on playback but a real cost on record.
         s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
-        s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -68,8 +72,8 @@ public final class ConnectionRecorder implements Listener {
         if (p == null || !p.getWorld().getUID().equals(s.world().getUID())) {
             int npc = p == null ? 0 : s.npcIdFor(p.getUniqueId());
             if (p != null) {
+                // D-8.5: same dedup — PlayerLeave alone.
                 s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
-                s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
             }
             return;
         }

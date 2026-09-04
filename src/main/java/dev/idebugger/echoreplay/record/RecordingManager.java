@@ -134,7 +134,10 @@ public final class RecordingManager {
             int pi = session.paletteIndex(state);
             storage.set(dx, dy, dz, pi);
             BlockState bs = block.getState();
-            if (bs != null && Snapshotter.needsNbt(bs.getType())) {
+            // D-5: use the BlockState-aware overload — catches BEACON, SPAWNER,
+            // BANNER, BEEHIVE, CONDUIT, ITEM_FRAME, etc. via TileState check,
+            // not just the explicit Material list.
+            if (bs != null && Snapshotter.needsNbt(bs)) {
                 byte[] nb = NbtBytes.serializeBlockState(bs);
                 if (nb != null && nb.length > 0) {
                     session.putSnapshotNbt(BlockPos.of(dx, dy, dz), nb);
@@ -361,8 +364,17 @@ public final class RecordingManager {
             w.writeBlockNbt(packSnapNbt(storage, snapNbt));
             w.writeEntities(new byte[0]);
             for (TimelineEvent ev : events) {
-                byte[] body = TimelineCodec.encodeBody(ev, palette);
-                w.appendTimelineEvent(ev.tickMillis(), body, (byte) TimelineCodec.typeId(ev));
+                try {
+                    byte[] body = TimelineCodec.encodeBody(ev, palette);
+                    w.appendTimelineEvent(ev.tickMillis(), body, (byte) TimelineCodec.typeId(ev));
+                } catch (IOException oversized) {
+                    // S-4: skip the single oversized event instead of failing
+                    // the entire recording. PlayerSpawn with shulker-box-of-
+                    // shulker-boxes (~2MB NBT) is the most common culprit.
+                    plugin.getLogger().warning("Skipping oversized event "
+                        + ev.getClass().getSimpleName() + " at " + ev.tickMillis()
+                        + "ms in '" + name + "': " + oversized.getMessage());
+                }
             }
         }
         if (!partial.renameTo(out)) {

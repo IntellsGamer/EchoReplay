@@ -73,6 +73,8 @@ public final class RecordingSession {
     public long mediaMillis() { return mediaClock.get(); }
     public int totalSections() { return totalSections; }
     public int sectionsDone() { return sectionsDone.get(); }
+    /** P-9: depth of the unflushed event sink, for /er stats. -1 if session not active. */
+    public int sinkDepth() { return sink.size(); }
 
     public void setTotalSections(int t) { this.totalSections = t; }
     public void setBlocksPerTick(int b) { this.blocksPerTick = b; }

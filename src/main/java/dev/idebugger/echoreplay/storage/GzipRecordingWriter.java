@@ -116,6 +116,19 @@ public final class GzipRecordingWriter implements AutoCloseable {
     }
 
     public void appendTimelineEvent(long tickMillis, byte[] body, byte typeId) throws IOException {
+        // S-4: hard guard against the u16 truncation that silently dropped
+        // any event > 65535 bytes (a player carrying a shulker-of-shulkers,
+        // a complex firework, or any large chat component would simply vanish
+        // from the recording AND leave ~2MB of unreadable payload in the file).
+        // The caller catches this and skips just the one oversized event,
+        // logging its type+tick so the rest of the recording survives.
+        if (body.length > 0xFFFF) {
+            throw new IOException("timeline event body too large: " + body.length
+                + " bytes (u16 length limit) — event type=" + (typeId & 0xFF)
+                + " tick=" + tickMillis + "ms; skipping this single event. "
+                + "(Format v2 will use varint/i32 lengths; for v1, split oversized "
+                + "PlayerSpawn equipment into follow-up Equipment events.)");
+        }
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         Io.LeOut b = Io.leOut(bos);
         b.writeLong(tickMillis);

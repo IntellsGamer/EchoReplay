@@ -14,25 +14,42 @@ import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEn
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityPositionSync;
 import com.github.retrooper.packetevents.protocol.entity.EntityPositionData;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
 import org.bukkit.entity.Player;
 
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Allocates entity ids in a high, unused band and spawns/updates/destroys fake
  * entities (packet-only) for viewers. Packets are sent via PacketEvents to each
  * viewer's connection.
+ *
+ * <p>S-9: every fake-player spawn now registers the fake UUID per runtime id;
+ * {@link #destroy(Player, int)} for a player runtime also sends
+ * {@link WrapperPlayServerPlayerInfoRemove} so the fake tab entry is removed.
+ * v1 left fake tab entries accumulating forever (30 entries per viewer after a
+ * 10-min PvP recording — the only way out was relog).</p>
  */
 public final class FakeEntityTracker {
 
     /** Start allocating downward from MAX to avoid collisions with live entities. */
     public static final int ID_START = Integer.MAX_VALUE - 1000;
     private final AtomicInteger nextId = new AtomicInteger(ID_START);
+
+    /**
+     * Tracks which fake UUID belongs to which runtime id, so destroy() can
+     * also send the REMOVE_PLAYER info update. Multiple viewers see the same
+     * fake UUID per runtime id (one fake entry per spawn, removed on destroy).
+     */
+    private final Map<Integer, UUID> playerUuidByRuntime = new ConcurrentHashMap<>();
 
     public FakeEntityTracker() {
     }
@@ -41,7 +58,9 @@ public final class FakeEntityTracker {
         return nextId.getAndDecrement();
     }
 
+    /** Forget the runtime→UUID mapping. Call when a session ends. */
     public void reset() {
+        playerUuidByRuntime.clear();
     }
 
     private static void send(Player viewer, com.github.retrooper.packetevents.wrapper.PacketWrapper<?> wrapper) {
@@ -55,6 +74,7 @@ public final class FakeEntityTracker {
         // UUID already in the local tab list), which otherwise leaves the fake
         // player invisible / non-responsive to move packets.
         UUID fakeUuid = UUID.randomUUID();
+        playerUuidByRuntime.put(runtimeId, fakeUuid);
         UserProfile profile = new UserProfile(fakeUuid, name);
         if (skin != null && skin.hasValue()) {
             String sig = (skin.signature() != null && !skin.signature().isEmpty()) ? skin.signature() : null;
@@ -85,6 +105,24 @@ public final class FakeEntityTracker {
 
     public void destroy(Player viewer, int runtimeId) {
         send(viewer, new WrapperPlayServerDestroyEntities(runtimeId));
+        // S-9: also remove the fake tab entry that spawnPlayer created.
+        // Without this, the fake player lingers in the viewer's tab list
+        // forever (until they relog). One REMOVE_PLAYER per viewer, per
+        // fake spawn — matches the ADD_PLAYER sent at spawn time.
+        UUID fakeUuid = playerUuidByRuntime.get(runtimeId);
+        if (fakeUuid != null) {
+            send(viewer, new WrapperPlayServerPlayerInfoRemove(java.util.List.of(fakeUuid)));
+        }
+    }
+
+    /**
+     * Cleanup hook called when a session ends: forgets the runtime→UUID
+     * mappings so a future session can reuse runtime ids without confusion.
+     * (Destroy packets must already have been sent for the viewers to see
+     * the entities gone — this is bookkeeping only.)
+     */
+    public void forgetRuntime(int runtimeId) {
+        playerUuidByRuntime.remove(runtimeId);
     }
 
     public void positionSync(Player viewer, int runtimeId, Vec3d pos, Rotation rot, boolean onGround) {
@@ -107,7 +145,7 @@ public final class FakeEntityTracker {
 
     /** Send an entity-metadata patch (stance flags / pose / eye height) to a viewer. */
     public void setMetadata(Player viewer, int runtimeId,
-                             java.util.List<com.github.retrooper.packetevents.protocol.entity.data.EntityData<?>> data) {
+                             List<com.github.retrooper.packetevents.protocol.entity.data.EntityData<?>> data) {
         if (data.isEmpty()) return;
         send(viewer, new WrapperPlayServerEntityMetadata(runtimeId, data));
     }

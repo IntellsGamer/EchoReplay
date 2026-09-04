@@ -59,10 +59,9 @@ public final class PlaybackBorderPrefs {
             return;
         }
         // Legacy fallback: players.<uuid>.borderEnabled = false
+        // D-8.10: removed the dead top-level `for (String key : cfg.getKeys(false)) {}`
+        // loop — it had an empty body and was inherited from an older migration.
         if (cfg.contains("players")) {
-            for (String key : cfg.getKeys(false)) {
-                // handle both top-level uuid keys and players.* nesting
-            }
             if (cfg.getConfigurationSection("players") != null) {
                 for (String uuid : cfg.getConfigurationSection("players").getKeys(false)) {
                     boolean enabled = cfg.getBoolean("players." + uuid + ".borderEnabled", true);

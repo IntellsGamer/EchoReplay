@@ -45,7 +45,7 @@ public final class Snapshotter {
                     int idx = storage.ensure(data.getAsString(true));
                     storage.set(dx, dy, dz, idx);
                     BlockState state = block.getState();
-                    if (needsNbt(state.getType())) {
+                    if (needsNbt(state)) {
                         byte[] nb = dev.idebugger.echoreplay.util.NbtBytes.serializeBlockState(state);
                         if (nb != null && nb.length > 0) {
                             nbtMap.put(key(dx, dy, dz), nb);
@@ -76,6 +76,26 @@ public final class Snapshotter {
                  PIGLIN_WALL_HEAD -> true;
             default -> false;
         };
+    }
+
+    /**
+     * D-5: robust type-check that catches every tile-entity in 1.21+ without
+     * needing to extend the Material list above each time Mojang adds one.
+     * Any block whose state implements {@link org.bukkit.block.TileState}
+     * (chests, signs, skulls, beacons, spawners, banners, beehives, sculk,
+     * command blocks, end gateways, chiseled bookshelves, conduits,
+     * enchanting tables, comparators, lodestones, etc.) has persistent
+     * state worth capturing. v1's Material-only list silently dropped BEACON,
+     * SPAWNER, BANNER, BEEHIVE, CONDUIT, ITEM_FRAME contents, and more.
+     *
+     * <p>Callers should prefer this overload when a BlockState is available.</p>
+     */
+    public static boolean needsNbt(org.bukkit.block.BlockState state) {
+        if (state == null) return false;
+        // Either it's on our explicit known list, OR Bukkit says it's a TileState.
+        // The instanceof check covers everything Mojang has ever shipped or will
+        // ship without us having to chase enum renames across Paper versions.
+        return needsNbt(state.getType()) || state instanceof org.bukkit.block.TileState;
     }
 
     public static String key(int dx, int dy, int dz) {

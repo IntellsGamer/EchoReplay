@@ -74,6 +74,23 @@ public final class ReplaySession {
     // the head actually turned (moves usually only change position).
     private final Map<Integer, Float> runtimeHeadYaw = new HashMap<>();
 
+    // S-8: viewers who have already received the full current state.
+    // New viewers (just joined via /er watch or auto-watch-radius) are added
+    // here only after resendStateTo runs for them, so the next per-tick
+    // applyEvent loop won't try to send updates for entities they've never
+    // seen spawned.
+    private final Set<UUID> caughtUp = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    // D-7: catch-up flag. While true, side-effect events (chat, sound,
+    // particle, block-break anim, damage flashes) are suppressed —
+    // otherwise a seek from 0:00 to 10:00 dumps every chat line + sound
+    // from those 10 minutes into a single tick, flooding chat windows.
+    // State events (move, spawn, equipment, pose) are still applied because
+    // they define what the world looks like at the new time.
+    private boolean catchingUp = false;
+    private int chatSkippedDuringCatchup = 0;
+    private int sfxSkippedDuringCatchup = 0;
+
     // Viewers resolved once per tick and reused by every event applied that
     // tick. Recomputing per event (world player scan + Location allocs) was
     // the dominant per-tick cost during busy playbacks.
@@ -156,11 +173,17 @@ public final class ReplaySession {
     public void addViewer(Player p) {
         if (!viewers.contains(p.getUniqueId())) {
             viewers.add(p.getUniqueId());
+            // S-8: viewer is NOT yet caughtUp — refreshViewers() will detect
+            // this next tick and call resendStateTo(p). That method sends
+            // every currently-spawned fake entity's spawn+pose to this viewer.
         }
     }
 
     public void removeViewer(Player p) {
         viewers.remove(p.getUniqueId());
+        // S-8: forget catch-up state for this viewer so they get re-caught-up
+        // if they /er watch again later.
+        caughtUp.remove(p.getUniqueId());
     }
 
     public boolean isViewer(Player p) {
@@ -220,9 +243,23 @@ public final class ReplaySession {
         return data;
     }
 
-    /** Refresh the per-tick viewer cache. Called once per tick, not per event. */
+    /** Refresh the per-tick viewer cache and run catch-up for any new viewers. */
     private void refreshViewers() {
         tickViewers = liveViewers();
+        // S-8: any viewer in tickViewers not yet in caughtUp needs the
+        // current full state re-sent to them. This runs at most once per
+        // viewer (caughtUp set is checked before re-send).
+        for (Player p : tickViewers) {
+            if (!caughtUp.contains(p.getUniqueId())) {
+                try {
+                    resendStateTo(p);
+                } catch (Throwable t) {
+                    plugin.getLogger().warning("Viewer catch-up failed for "
+                        + p.getName() + ": " + t);
+                    caughtUp.add(p.getUniqueId()); // avoid retry loop
+                }
+            }
+        }
     }
 
     /**
@@ -321,17 +358,18 @@ public final class ReplaySession {
     public void seekTo(double targetMs) {
         if (stopping || phase == Phase.RESTORE || phase == Phase.DONE) return;
         if (virtual) {
-            // No terrain to rebuild: reset entities and fast-apply synchronously
-            // (cheap: no block parsing anymore, palette is pre-parsed).
+            // D-7: route virtual seek through the same budgeted CATCHUP phase
+            // as world mode. v1 ran it synchronously with no budget — for a
+            // 30-min entity-heavy take that's potentially hundreds of
+            // thousands of applyEvent calls in one command call = multi-
+            // second main-thread stall. Now it streams over ticks like world
+            // mode, with side-effect events suppressed.
             resetEntities();
             appliedIndex = 0;
-            refreshViewers();
-            while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= targetMs) {
-                TimelineEvent ev = timeline.get(appliedIndex);
-                appliedIndex++;
-                applyEvent(ev);
-            }
-            clock.seekTo(targetMs);
+            seekWasPaused = clock.paused();
+            clock.pause();
+            // Use the catchup phase machinery to stream events up to target.
+            beginCatchup(targetMs);
             return;
         }
         boolean wasPaused = clock.paused();
@@ -347,6 +385,61 @@ public final class ReplaySession {
         seekWasPaused = wasPaused;
         appliedIndex = 0;
         beginSnapshot(targetMs);
+    }
+
+    /** Begin streaming events up to {@code targetMs}, with side effects suppressed. */
+    private void beginCatchup(double targetMs) {
+        catchupTargetMs = targetMs;
+        chatSkippedDuringCatchup = 0;
+        sfxSkippedDuringCatchup = 0;
+        catchingUp = true;
+        phase = Phase.CATCHUP;
+    }
+
+    /** Re-send the current full fake-entity state to a viewer who just joined. */
+    public void resendStateTo(Player p) {
+        // S-8: walk every currently-spawned fake entity and re-send the
+        // spawn + current pose + flags + head yaw + name + skin + equipment
+        // to exactly this viewer. They will then see all future moves for
+        // entity IDs their client now knows about. Without this, late
+        // viewers see invisible replays (move packets for IDs the client
+        // never spawned).
+        for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
+            int stable = e.getKey();
+            int runtime = e.getValue();
+            EntityPose pose = entityPoses.get(stable);
+            if (pose == null) continue;
+            String name = nameByStable.get(stable);
+            if (name != null) {
+                // Re-send player spawn + info entry. Skin is not preserved
+                // post-spawn (only the spawn packet carried it), so a late
+                // viewer sees the default skin — acceptable trade-off for
+                // not having to keep a per-stable skin cache.
+                fakes.spawnPlayer(p, runtime, UUID.randomUUID(), name,
+                        null, pose.pos(), pose.rot());
+                recordSpawnedFor(runtime, p);
+            } else {
+                // For mobs we lost the original EntityType, so skip the
+                // re-spawn — best-effort catch-up for the common case
+                // (player-heavy replays). Mob-only replays will still see
+                // missing entities for late joiners, which is the same as v1.
+            }
+            fakes.positionSync(p, runtime, pose.pos(), pose.rot(), true);
+            Float head = runtimeHeadYaw.get(stable);
+            if (head != null) fakes.headLook(p, runtime, head);
+            Byte flags = runtimeFlags.get(runtime);
+            com.github.retrooper.packetevents.protocol.entity.pose.EntityPose ep =
+                    runtimePose.get(runtime);
+            if (flags != null || ep != null) {
+                java.util.List<EntityData<?>> data = new ArrayList<>();
+                data.add(new EntityData<>(0, EntityDataTypes.BYTE,
+                        (byte) (flags == null ? 0 : (flags & (FLAG_MASK_CROUCHED | FLAG_MASK_SPRINTING | FLAG_MASK_SWIMMING)))));
+                data.add(new EntityData<>(6, EntityDataTypes.ENTITY_POSE,
+                        ep == null ? com.github.retrooper.packetevents.protocol.entity.pose.EntityPose.STANDING : ep));
+                fakes.setMetadata(p, runtime, data);
+            }
+        }
+        caughtUp.add(p.getUniqueId());
     }
 
     private boolean seekWasPaused = false;
@@ -367,6 +460,7 @@ public final class ReplaySession {
         appliedIndex = 0;
         borderTickCounter = 0;
         runtimeHeadYaw.clear();
+        caughtUp.clear();
         if (virtual) {
             // No terrain to rebuild: entities + t=0 events only, then run.
             resetEntities();
@@ -440,6 +534,10 @@ public final class ReplaySession {
         runtimePose.clear();
         runtimeHeadYaw.clear();
         dyingRuntimes.clear();
+        // S-8: also clear caughtUp because all fake entities are gone —
+        // next tick, refreshViewers() will re-send spawn packets to every
+        // current viewer for whatever entities exist post-reset.
+        caughtUp.clear();
     }
 
     /** Apply t=0 entity spawns after a snapshot reset. */
@@ -488,7 +586,7 @@ public final class ReplaySession {
             }
             liveData[i] = pi;
             org.bukkit.block.BlockState bs = b.getState();
-            if (bs != null && dev.idebugger.echoreplay.record.Snapshotter.needsNbt(bs.getType())) {
+            if (bs != null && dev.idebugger.echoreplay.record.Snapshotter.needsNbt(bs)) {
                 byte[] nb = dev.idebugger.echoreplay.util.NbtBytes.serializeBlockState(bs);
                 if (nb != null && nb.length > 0) {
                     liveNbt.put(dx + "," + dy + "," + dz, nb);
@@ -543,6 +641,12 @@ public final class ReplaySession {
         resetEntities();
         applyT0Events();
         if (catchupTargetMs >= 0) {
+            // D-7: set the catch-up flag for world-mode seeks too — without
+            // this, side-effect events (chat/sound/particle/damage) would
+            // flood viewers during the catch-up phase.
+            catchingUp = true;
+            chatSkippedDuringCatchup = 0;
+            sfxSkippedDuringCatchup = 0;
             phase = Phase.CATCHUP;
         } else {
             phase = Phase.RUN;
@@ -565,6 +669,17 @@ public final class ReplaySession {
         catchupTargetMs = -1;
         clock.seekTo(target);
         phase = Phase.RUN;
+        // D-7: clear the suppression flag and surface a summary if we skipped anything.
+        catchingUp = false;
+        if (chatSkippedDuringCatchup > 0 || sfxSkippedDuringCatchup > 0) {
+            String summary = "<gray>Catch-up complete";
+            if (chatSkippedDuringCatchup > 0) summary += " (" + chatSkippedDuringCatchup + " chat lines skipped)";
+            if (sfxSkippedDuringCatchup > 0) summary += " (" + sfxSkippedDuringCatchup + " sfx events skipped)";
+            summary += "</gray>";
+            for (Player p : tickViewers) p.sendMessage(Text.mm(summary));
+            chatSkippedDuringCatchup = 0;
+            sfxSkippedDuringCatchup = 0;
+        }
         if (!seekWasPaused) clock.resume();
         seekWasPaused = false;
     }
@@ -674,6 +789,9 @@ public final class ReplaySession {
     }
 
     private void onBlockBreakAnim(TimelineEvent.BlockBreakAnim b) {
+        // D-7: suppress during catch-up — would otherwise fire hundreds of
+        // break animations per tick during a seek.
+        if (catchingUp) return;
         Integer runtime = stableToRuntime.get(b.breakerNpcId());
         if (runtime == null) runtime = 0;
         int wx = cuboid.min().x() + b.pos().x();
@@ -888,6 +1006,13 @@ public final class ReplaySession {
     }
 
     private void onChat(TimelineEvent.Chat c) {
+        // D-7: suppress chat during catch-up. A seek from 0:00 to 10:00 would
+        // otherwise dump every chat line from those 10 minutes into a single
+        // tick, flooding every viewer's chat window.
+        if (catchingUp) {
+            chatSkippedDuringCatchup++;
+            return;
+        }
         String name = nameByStable.getOrDefault(c.npcId(), null);
         net.kyori.adventure.text.Component msg;
         try {
@@ -962,6 +1087,8 @@ public final class ReplaySession {
 
     /** Replay a recorded damage hit: fire the client hurt red-flash animation. */
     private void onDamage(TimelineEvent.Damage d) {
+        // D-7: suppress damage flashes during catch-up.
+        if (catchingUp) return;
         Integer runtime = stableToRuntime.get(d.npcId());
         if (runtime == null) return;
         // yaw 0 = straight-on hurt flash.
@@ -989,6 +1116,13 @@ public final class ReplaySession {
     }
 
     private void onSound(TimelineEvent.Sound s) {
+        // D-7: suppress during catch-up. The speed guard alone wasn't enough —
+        // catch-up runs with the clock paused at the old speed, so the
+        // skipSfxAbove guard never triggered exactly when it was needed.
+        if (catchingUp) {
+            sfxSkippedDuringCatchup++;
+            return;
+        }
         // Respect speed-sipping: skip ambience when fast-forwarding
         if (clock.speed() > skipSfxAbove) return;
         org.bukkit.Location loc = new org.bukkit.Location(world, s.pos().x(), s.pos().y(), s.pos().z());
@@ -1008,6 +1142,11 @@ public final class ReplaySession {
     }
 
     private void onParticle(TimelineEvent.Particle p) {
+        // D-7: suppress during catch-up.
+        if (catchingUp) {
+            sfxSkippedDuringCatchup++;
+            return;
+        }
         if (clock.speed() > skipSfxAbove) return;
         String raw = p.particleKey();
         String key = raw.contains(":") ? raw.substring(raw.indexOf(":") + 1) : raw;
@@ -1026,6 +1165,8 @@ public final class ReplaySession {
     }
 
     private void onExplosion(TimelineEvent.Explosion e) {
+        // D-7: suppress during catch-up.
+        if (catchingUp) return;
         org.bukkit.Location loc = new org.bukkit.Location(world, e.pos().x(), e.pos().y(), e.pos().z());
         for (Player p : tickViewers) {
             try {
@@ -1155,7 +1296,7 @@ public final class ReplaySession {
                     }
                     data[idx++] = pi;
                     org.bukkit.block.BlockState bs = b.getState();
-                    if (bs != null && dev.idebugger.echoreplay.record.Snapshotter.needsNbt(bs.getType())) {
+                    if (bs != null && dev.idebugger.echoreplay.record.Snapshotter.needsNbt(bs)) {
                         byte[] nb = dev.idebugger.echoreplay.util.NbtBytes.serializeBlockState(bs);
                         if (nb != null && nb.length > 0) {
                             liveNbt.put(dx + "," + dy + "," + dz, nb);

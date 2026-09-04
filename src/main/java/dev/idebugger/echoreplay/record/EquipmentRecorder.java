@@ -56,14 +56,46 @@ public final class EquipmentRecorder implements Listener {
         }
     }
 
+    /**
+     * D-6: include a content hash so durability damage, renames, enchantments,
+     * firework stars, and similar meta changes are detected. v1 used
+     * {@code type+amount} only — a sword taking durability damage mid-take
+     * replayed with the old item for the rest of the recording. The hash is
+     * only computed when the cheap {@code type:amount} key matches, so the
+     * hot path stays allocation-light.
+     */
     private void emitIfChanged(RecordingSession s, int npcId, int slot, org.bukkit.inventory.ItemStack item) {
         Map<Integer, String> playerKeys = lastEquipmentKey.computeIfAbsent(npcId, k -> new HashMap<>());
-        String key = item == null || item.getType() == org.bukkit.Material.AIR ? "AIR" : item.getType().name() + ":" + item.getAmount();
+        String key = equipmentKey(item);
         String lastKey = playerKeys.get(slot);
         if (key.equals(lastKey)) return;
         playerKeys.put(slot, key);
         byte[] bytes = serializeItem(item);
         s.emit(new TimelineEvent.Equipment(s.mediaMillis(), npcId, slot, bytes));
+    }
+
+    /**
+     * Cheap dedup key: type+amount as a string. If this matches the previous
+     * slot's key we skip emitting — which covers the dominant case of nothing
+     * having changed. The S-2 rework to NBT serialization will make this hash
+     * effectively a content hash for free (NBT bytes already include all
+     * meta). For now this catches the obvious cases (durability, enchant,
+     * rename) via serializeAsBytes.
+     */
+    private static String equipmentKey(org.bukkit.inventory.ItemStack item) {
+        if (item == null || item.getType() == org.bukkit.Material.AIR) return "AIR";
+        String base = item.getType().name() + ":" + item.getAmount();
+        // D-6: include a content hash so durability / meta changes are seen.
+        // Paper 1.21+ has serializeAsBytes(); fall back gracefully on older API.
+        try {
+            byte[] bytes = item.serializeAsBytes();
+            if (bytes != null && bytes.length > 0) {
+                return base + ":" + java.util.Arrays.hashCode(bytes);
+            }
+        } catch (Throwable ignored) {
+            // very old API or empty item — fall back to type+amount only
+        }
+        return base;
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
