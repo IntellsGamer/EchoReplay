@@ -523,9 +523,10 @@ public final class ReplaySession {
     }
 
     /**
-     * Vanish a spectator's real body from every other player — world entity
-     * AND tab list — since it is driven through the live world and otherwise
-     * everyone watches it glide around. Re-shown on every release path.
+     * Hide a spectator's player model from every other player. The real body
+     * is driven through the live world, so without this everyone watches it
+     * glide around. Tab list is intentionally left alone — only the model
+     * hides. Re-shown on every release path.
      */
     private void hideSpectator(Player p) {
         if (p == null) return;
@@ -536,7 +537,6 @@ public final class ReplaySession {
                     viewer.hidePlayer(plugin, p);
                 } catch (Exception ignored) {
                 }
-                sendTabRemove(viewer, p);
             }
         } catch (Exception ignored) {
         }
@@ -551,13 +551,12 @@ public final class ReplaySession {
                     viewer.showPlayer(plugin, p);
                 } catch (Exception ignored) {
                 }
-                sendTabAdd(viewer, p);
             }
         } catch (Exception ignored) {
         }
     }
 
-    /** Hide all live spectators from a fresh joiner (called on player join). */
+    /** Hide all live spectators' models from a fresh joiner (on player join). */
     public void hideSpectatorsFrom(Player viewer) {
         if (viewer == null || spectateStable.isEmpty()) return;
         for (UUID id : spectateStable.keySet()) {
@@ -568,42 +567,6 @@ public final class ReplaySession {
                 viewer.hidePlayer(plugin, p);
             } catch (Exception ignored) {
             }
-            sendTabRemove(viewer, p);
-        }
-    }
-
-    private static void sendTabRemove(Player viewer, Player hidden) {
-        try {
-            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
-                    new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove(
-                            hidden.getUniqueId()));
-        } catch (Exception ignored) {
-        }
-    }
-
-    private static void sendTabAdd(Player viewer, Player shown) {
-        try {
-            com.github.retrooper.packetevents.protocol.player.UserProfile profile =
-                    new com.github.retrooper.packetevents.protocol.player.UserProfile(
-                            shown.getUniqueId(), shown.getName());
-            com.github.retrooper.packetevents.protocol.player.GameMode gm =
-                    switch (shown.getGameMode()) {
-                        case CREATIVE -> com.github.retrooper.packetevents.protocol.player.GameMode.CREATIVE;
-                        case ADVENTURE -> com.github.retrooper.packetevents.protocol.player.GameMode.ADVENTURE;
-                        case SPECTATOR -> com.github.retrooper.packetevents.protocol.player.GameMode.SPECTATOR;
-                        default -> com.github.retrooper.packetevents.protocol.player.GameMode.SURVIVAL;
-                    };
-            int ping = 0;
-            try {
-                ping = shown.getPing();
-            } catch (Exception ignored) {
-            }
-            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
-                    new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate(
-                            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
-                            new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
-                                    profile, true, ping, gm, null, null)));
-        } catch (Exception ignored) {
         }
     }
 
