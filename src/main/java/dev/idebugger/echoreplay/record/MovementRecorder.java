@@ -49,6 +49,17 @@ public final class MovementRecorder extends PacketListenerAbstract {
         this.plugin = plugin;
     }
 
+    /**
+     * Main-thread position anchor (called from the per-tick recorder). 1.0.14
+     * sourced rotation-only moves from the live server location; without an
+     * anchor, look-around-while-standing-still packets are dropped for lack of
+     * a position baseline and the recorded head freezes until the player moves.
+     */
+    public void seedIfAbsent(UUID uuid, double x, double y, double z, float yaw, float pitch) {
+        if (uuid == null) return;
+        lastSent.putIfAbsent(uuid, new LastMove(x, y, z, yaw, pitch, yaw));
+    }
+
     private RecordingSession session() {
         RecordingSession s = plugin.recordingManager().activeSession();
         if (s == null || s.state() != RecordingSession.State.RECORDING) {

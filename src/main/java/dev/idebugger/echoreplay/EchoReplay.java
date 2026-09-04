@@ -36,6 +36,7 @@ public final class EchoReplay extends JavaPlugin {
     private int tickTaskId = -1;
     private com.github.retrooper.packetevents.event.PacketListenerCommon movementListener;
     private com.github.retrooper.packetevents.event.PacketListenerCommon outboundListener;
+    private dev.idebugger.echoreplay.record.MovementRecorder movementRecorder;
 
     public static EchoReplay get() {
         return INSTANCE.get();
@@ -72,8 +73,9 @@ public final class EchoReplay extends JavaPlugin {
         EchoCommand echoCommand = new EchoCommand(this);
         echoCommand.register();
 
+        movementRecorder = new dev.idebugger.echoreplay.record.MovementRecorder(this);
         movementListener = com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager()
-                .registerListener(new dev.idebugger.echoreplay.record.MovementRecorder(this));
+                .registerListener(movementRecorder);
         outboundListener = com.github.retrooper.packetevents.PacketEvents.getAPI().getEventManager()
                 .registerListener(new dev.idebugger.echoreplay.record.PacketOutRecorder(this));
 
@@ -135,6 +137,8 @@ public final class EchoReplay extends JavaPlugin {
     private void renderSelectionOutlines() {
         if (!cfg().getBoolean("selection.outline-particles", false)) return;
         for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+            // Personal border toggle (/er border) covers region outlines too.
+            if (borderPrefs != null && !borderPrefs.isEnabled(p.getUniqueId())) continue;
             dev.idebugger.echoreplay.select.Selection sel = selectionManager.getIfExists(p);
             if (sel == null || !sel.isComplete()) continue;
             dev.idebugger.echoreplay.select.Cuboid c = sel.cuboid();
@@ -191,6 +195,7 @@ public final class EchoReplay extends JavaPlugin {
     }
 
     public SelectionManager selectionManager() { return selectionManager; }
+    public dev.idebugger.echoreplay.record.MovementRecorder movementRecorder() { return movementRecorder; }
     public RecordingIndex recordingIndex() { return recordingIndex; }
     public RecordingManager recordingManager() { return recordingManager; }
     public ReplayManager replayManager() { return replayManager; }

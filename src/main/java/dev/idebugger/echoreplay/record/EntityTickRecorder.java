@@ -101,6 +101,11 @@ public final class EntityTickRecorder {
             observed.put(uuid, new EntityPose(pos, rot));
 
             if (isPlayer) {
+                // Anchor the packet-thread movement baseline so rotation-only
+                // packets (look-around while standing still) record immediately
+                // instead of being dropped for lack of a position baseline.
+                dev.idebugger.echoreplay.record.MovementRecorder mr = plugin.movementRecorder();
+                if (mr != null) mr.seedIfAbsent(uuid, x, y, z, yaw, pitch);
                 EntityPose prevPlayer = lastPlayerSeen.get(uuid);
                 boolean first = prevPlayer == null;
                 if (first) {
