@@ -74,6 +74,8 @@ public final class RecordingSession {
 
     // World time of the previous recording tick (for change detection).
     private long lastWorldTime = -1;
+    // Last recorded storm state (for change detection; -1 = unknown).
+    private int lastStorm = -1;
 
     public enum State { SNAPSHOTTING, RECORDING, FINALIZING, CANCELLED }
 
@@ -202,6 +204,23 @@ public final class RecordingSession {
         if (t / 20 != lastWorldTime / 20) {
             lastWorldTime = t;
             emit(new TimelineEvent.WorldTime(mediaMillis(), t, !world().isFixedTime()));
+        }
+    }
+
+    /** Emit a Weather event when the storm state changed (0/1 flags). */
+    public void emitWeatherIfChanged() {
+        boolean storm;
+        boolean thunder;
+        try {
+            storm = world().hasStorm();
+            thunder = world().isThundering();
+        } catch (Exception ignored) {
+            return;
+        }
+        int code = (storm ? 1 : 0) | (thunder ? 2 : 0);
+        if (code != lastStorm) {
+            lastStorm = code;
+            emit(new TimelineEvent.Weather(mediaMillis(), storm ? 1 : 0, thunder ? 1 : 0));
         }
     }
 

@@ -58,8 +58,9 @@ replay:
   auto-watch-radius: 32
   # Capture the live terrain before a world-mode replay and restore it on stop
   backup-live-cuboid: true
-  # Drive the real world's time-of-day from the recording while playing
-  # (world mode only)
+  # Drive each viewer's client-side time-of-day and weather from the
+  # recording while playing (world mode only). Purely visual per player:
+  # the real world is never modified. Needs capture-time recordings.
   drive-world-time: false
   # Cancel block physics inside the cuboid while a world-mode replay runs
   physics-frozen: true

@@ -114,8 +114,8 @@ sorted by `tickMillis` before playback).
 | 18 | SOUND | `string key, string category, f64 x,y,z, f32 volume, f32 pitch` |
 | 19 | PARTICLE | `string particleKey, f64 x,y,z, f32 dx,dy,dz, f32 speed, i32 count` |
 | 20 | CHAT | `i32 npcId, string json` |
-| 21 | WORLD_TIME | `i64 time, u8 cycling` |
-| 22 | WEATHER | `i32 rainStrength, i32 thunderStrength` |
+| 21 | WORLD_TIME | `i64 time, u8 cycling` (emitted at most once per in-game second) |
+| 22 | WEATHER | `i32 rainStrength, i32 thunderStrength` (0/1 flags; emitted on change) |
 | 23 | EXPLOSION | `f64 x,y,z, f32 power` |
 | 24 | ITEM_USE | `i32 npcId, i32 hand, u8 started` |
 | 25 | TELEPORT | `i32 npcId, f64 x,y,z, f32 pitch,yaw,headYaw` |

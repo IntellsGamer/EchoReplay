@@ -215,6 +215,7 @@ public final class ReplaySession {
         }
         for (Set<UUID> set : pausedSpectate.values()) set.remove(p.getUniqueId());
         restoreForcedMode(p);
+        resetViewerSky(p);
     }
 
     private void restoreForcedMode(Player p) {
@@ -1077,9 +1078,10 @@ public final class ReplaySession {
             }
         }
         forcedModes.clear();
-        // Notify viewers that playback ended
+        // Notify viewers that playback ended; personal sky goes back to real.
         for (Player p : liveViewers()) {
             p.sendMessage(Text.mm("<gray>Playback ended.</gray>"));
+            resetViewerSky(p);
         }
         for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
             destroyFor(e.getValue());
@@ -1364,6 +1366,7 @@ public final class ReplaySession {
             case TimelineEvent.Explosion e -> onExplosion(e);
             case TimelineEvent.EntityStatus s -> onEntityStatus(s);
             case TimelineEvent.WorldTime w -> onWorldTime(w);
+            case TimelineEvent.Weather w -> onWeather(w);
             case TimelineEvent.PlayerVitals v -> onPlayerVitals(v);
             case TimelineEvent.PlayerInventory v -> onPlayerInventory(v);
             case TimelineEvent.GameMode g -> onPlayerGameMode(g);
@@ -1419,11 +1422,44 @@ public final class ReplaySession {
         return null;
     }
 
-    /** Drive the real world's time-of-day from the recording (world mode only). */
+    /** Drive each viewer's client-side time-of-day from the recording.
+     *  Never touches the real world — purely visual per-player time. */
     private void onWorldTime(TimelineEvent.WorldTime w) {
         if (!driveWorldTime || virtual) return;
+        for (Player p : tickViewers) {
+            if (p == null || !p.isOnline()) continue;
+            try {
+                p.setPlayerTime(w.time(), false);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Drive each viewer's client-side weather from the recording.
+     *  Never touches the real world — purely visual per-player weather. */
+    private void onWeather(TimelineEvent.Weather w) {
+        if (!driveWorldTime || virtual) return;
+        org.bukkit.WeatherType type = (w.rainStrength() > 0 || w.thunderStrength() > 0)
+                ? org.bukkit.WeatherType.DOWNFALL
+                : org.bukkit.WeatherType.CLEAR;
+        for (Player p : tickViewers) {
+            if (p == null || !p.isOnline()) continue;
+            try {
+                p.setPlayerWeather(type);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Return one viewer to the world's real time and weather. */
+    private static void resetViewerSky(Player p) {
+        if (p == null || !p.isOnline()) return;
         try {
-            world.setTime(w.time());
+            p.resetPlayerTime();
+        } catch (Exception ignored) {
+        }
+        try {
+            p.resetPlayerWeather();
         } catch (Exception ignored) {
         }
     }

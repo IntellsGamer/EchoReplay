@@ -234,6 +234,7 @@ public final class RecordingManager {
         entityTickRecorder.tick();
         if (captureTime) {
             session.emitWorldTimeIfChanged();
+            session.emitWeatherIfChanged();
         }
         flushCounterMs += 50;
         if (flushCounterMs >= flushSeconds * 1000L) {
