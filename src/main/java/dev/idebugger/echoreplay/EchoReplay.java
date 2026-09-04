@@ -42,6 +42,70 @@ public final class EchoReplay extends JavaPlugin {
         return INSTANCE.get();
     }
 
+    /** Bundled config version. Bump when defaults change meaning. */
+    private static final int CONFIG_VERSION = 2;
+
+    /**
+     * Bring old configs forward: back up, fill in missing keys from bundled
+     * defaults, and flip keys whose default changed (with a warning naming
+     * the old behavior). Never deletes user values.
+     */
+    private void migrateConfig() {
+        File f = new File(getDataFolder(), "config.yml");
+        if (!f.exists()) return; // saveDefaultConfig just wrote a fresh one
+        FileConfiguration live = getConfig();
+        int v = 0;
+        try {
+            v = live.getInt("config-version", 0);
+        } catch (Exception ignored) {
+        }
+        if (v >= CONFIG_VERSION) return;
+        try {
+            java.nio.file.Files.copy(f.toPath(),
+                    new File(getDataFolder(), "config.yml.bak").toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception ignored) {
+        }
+        int added = 0;
+        try (java.io.InputStream in = getResource("config.yml")) {
+            if (in != null) {
+                org.bukkit.configuration.file.YamlConfiguration bundled =
+                        org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(
+                                new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+                for (String key : bundled.getKeys(true)) {
+                    if (bundled.isConfigurationSection(key)) continue;
+                    if (!live.contains(key)) {
+                        live.set(key, bundled.get(key));
+                        added++;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        java.util.List<String> flipped = new java.util.ArrayList<>();
+        if (v < 2) {
+            // v2 defaults: play no longer forces spectator; checkpoints are
+            // deleted right after save. Only flip values still sitting on the
+            // v1 default (true) — explicit false stays false silently.
+            if (live.getBoolean("replay.force-spectator", false)) {
+                live.set("replay.force-spectator", false);
+                flipped.add("replay.force-spectator=true->false (set it back to true for forced spectator)");
+            }
+            if (live.getBoolean("storage.keep-partial-on-crash", false)) {
+                live.set("storage.keep-partial-on-crash", false);
+                flipped.add("storage.keep-partial-on-crash=true->false (set it back to true to keep .partial files)");
+            }
+        }
+        live.set("config-version", CONFIG_VERSION);
+        try {
+            live.save(f);
+        } catch (Exception ignored) {
+        }
+        getLogger().info("Migrated config.yml to v" + CONFIG_VERSION
+                + " (backup: config.yml.bak, new keys added: " + added
+                + (flipped.isEmpty() ? "" : ", defaults flipped: " + String.join("; ", flipped)) + ").");
+    }
+
     @Override
     public void onLoad() {
         INSTANCE.set(this);
@@ -53,6 +117,7 @@ public final class EchoReplay extends JavaPlugin {
         PacketEventsSetup.onEnable();
 
         saveDefaultConfig();
+        migrateConfig();
         FileConfiguration config = getConfig();
 
         ioExecutor = Executors.newSingleThreadExecutor(r -> {

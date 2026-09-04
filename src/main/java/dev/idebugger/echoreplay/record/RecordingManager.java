@@ -50,6 +50,11 @@ public final class RecordingManager {
     private int blocksPerTick = 8000;
     private boolean captureTime = true;
     private int maxDurationMinutes = 30;
+    private int maxAgeDays = 0;
+    private boolean recIndicator = true;
+    // Players currently shown the red REC bossbar (shown while inside the
+    // recording cuboid, hidden on leave/stop).
+    private final Map<java.util.UUID, org.bukkit.boss.BossBar> recBars = new java.util.HashMap<>();
 
     private Cuboid.Section[] pendingSections;
     private int pendingIndex = 0;
@@ -71,10 +76,13 @@ public final class RecordingManager {
         blocksPerTick = config.getInt("recording.snapshot.blocks-per-tick", 8000);
         captureTime = config.getBoolean("recording.capture-time", true);
         maxDurationMinutes = config.getInt("recording.max-duration-minutes", 30);
+        maxAgeDays = config.getInt("storage.max-age-days", 0);
+        recIndicator = config.getBoolean("recording.rec-indicator", true);
         recordingsDir = new File(plugin.getDataFolder(), config.getString("storage.directory", "recordings"));
         recordingsDir.mkdirs();
         regionDiffRecorder.configure(config.getInt("recording.scan-interval-ticks", 1));
         recoverCrashedCheckpoints();
+        pruneOldRecordings();
     }
 
     public void registerListeners(EchoReplay p) {
@@ -92,6 +100,7 @@ public final class RecordingManager {
         if (session != null) {
             forceStopAndSave();
         }
+        hideRecBars();
     }
 
     public RecordingSession activeSession() {
@@ -102,15 +111,117 @@ public final class RecordingManager {
 
     public EntityTickRecorder entityTickRecorder() { return entityTickRecorder; }
 
+    public RegionDiffRecorder regionDiffRecorder() { return regionDiffRecorder; }
+
     public EquipmentRecorder equipmentRecorder() { return equipmentRecorder; }
 
     public void onTick() {
-        if (session == null) return;
+        if (session == null) {
+            if (!recBars.isEmpty()) hideRecBars();
+            return;
+        }
         switch (session.state()) {
             case SNAPSHOTTING -> tickSnapshot();
             case RECORDING -> tickRecording();
             default -> {}
         }
+        tickRecIndicator();
+    }
+
+    /**
+     * Red REC bossbar for everyone inside the recording cuboid while a take
+     * runs. Shown on enter, hidden on leave/stop. Disabled entirely with
+     * recording.rec-indicator=false.
+     */
+    private void tickRecIndicator() {
+        if (!recIndicator || session == null) {
+            hideRecBars();
+            return;
+        }
+        RecordingSession.State st = session.state();
+        if (st != RecordingSession.State.SNAPSHOTTING && st != RecordingSession.State.RECORDING) {
+            hideRecBars();
+            return;
+        }
+        Cuboid cuboid = session.cuboid();
+        World world = session.world();
+        if (cuboid == null || world == null) {
+            hideRecBars();
+            return;
+        }
+        java.util.Set<java.util.UUID> inside = new java.util.HashSet<>();
+        for (Player p : org.bukkit.Bukkit.getOnlinePlayers()) {
+            try {
+                if (!p.getWorld().getUID().equals(world.getUID())) continue;
+                if (!cuboid.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ())) continue;
+            } catch (Exception ignored) {
+                continue;
+            }
+            inside.add(p.getUniqueId());
+            org.bukkit.boss.BossBar bar = recBars.get(p.getUniqueId());
+            if (bar == null) {
+                bar = org.bukkit.Bukkit.createBossBar(
+                        org.bukkit.ChatColor.RED + "\u25CF REC",
+                        org.bukkit.boss.BarColor.RED, org.bukkit.boss.BarStyle.SOLID);
+                recBars.put(p.getUniqueId(), bar);
+            }
+            try {
+                if (!bar.getPlayers().contains(p)) bar.addPlayer(p);
+            } catch (Exception ignored) {
+            }
+        }
+        java.util.Iterator<java.util.Map.Entry<java.util.UUID, org.bukkit.boss.BossBar>> it =
+                recBars.entrySet().iterator();
+        while (it.hasNext()) {
+            java.util.Map.Entry<java.util.UUID, org.bukkit.boss.BossBar> en = it.next();
+            if (inside.contains(en.getKey())) continue;
+            try {
+                Player p = org.bukkit.Bukkit.getPlayer(en.getKey());
+                if (p != null) en.getValue().removePlayer(p);
+            } catch (Exception ignored) {
+            }
+            it.remove();
+        }
+    }
+
+    private void hideRecBars() {
+        for (java.util.Map.Entry<java.util.UUID, org.bukkit.boss.BossBar> en : recBars.entrySet()) {
+            try {
+                Player p = org.bukkit.Bukkit.getPlayer(en.getKey());
+                if (p != null) en.getValue().removePlayer(p);
+            } catch (Exception ignored) {
+            }
+        }
+        recBars.clear();
+    }
+
+    /**
+     * Delete recordings (plus leftover checkpoints) older than
+     * storage.max-age-days. 0 = keep forever.
+     */
+    private void pruneOldRecordings() {
+        if (maxAgeDays <= 0 || recordingsDir == null) return;
+        File[] files = recordingsDir.listFiles((d, n) -> n.endsWith(".echoreplay.gz"));
+        if (files == null || files.length == 0) return;
+        long cutoff = System.currentTimeMillis() - (long) maxAgeDays * 24L * 3600L * 1000L;
+        int n = 0;
+        for (File f : files) {
+            try {
+                if (f.lastModified() >= cutoff) continue;
+                String name = f.getName().substring(0, f.getName().length() - ".echoreplay.gz".length());
+                new File(recordingsDir, f.getName() + PARTIAL_SUFFIX).delete();
+                if (f.delete()) {
+                    n++;
+                    try {
+                        plugin.recordingIndex().remove(name);
+                    } catch (Exception ignored) {
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (n > 0) plugin.getLogger().info("Pruned " + n + " recordings older than " + maxAgeDays + " days.");
     }
 
     private int snapCursor = 0;
@@ -425,6 +536,7 @@ public final class RecordingManager {
                         fsizeX, fsizeY, fsizeZ, fs.raw(), packSnapNbt(fs, fnbt), fev);
                 plugin.recordingIndex().put(new RecordingEntry(fname, fworldUuid, fworldName, fd, out.length(),
                         fsTime, fc.min().x(), fc.min().y(), fc.min().z(), fc.max().x(), fc.max().y(), fc.max().z()));
+                pruneOldRecordings();
                 boolean keep = plugin.cfg().getBoolean("storage.keep-partial-on-crash", false);
                 s.closeCheckpointWriter();
                 File cp = s.checkpointFile();

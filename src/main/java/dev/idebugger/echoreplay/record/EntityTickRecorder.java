@@ -72,6 +72,7 @@ public final class EntityTickRecorder {
         // Book-keeping set of mobs we observed this tick, so we can emit a
         // LEAVE for mobs that were tracked but vanished from the region.
         Map<java.util.UUID, EntityPose> observed = new HashMap<>();
+        boolean seenPlayer = false;
 
         // Centered box with exact half-extents: the old call passed full
         // sizes as radii from the min corner, scanning 8x the volume and
@@ -87,6 +88,7 @@ public final class EntityTickRecorder {
             Location loc = e.getLocation();
             if (!c.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) continue;
             inRegion.add(uuid);
+            if (isPlayer) seenPlayer = true;
 
             // Pose / stance capture applies to everyone (players + mobs).
             captureStance(s, uuid, e);
@@ -196,6 +198,12 @@ public final class EntityTickRecorder {
                     inRegion.remove(en.getKey());
                 }
             }
+        }
+        // Tell the background diff scanner whether anyone is around to see
+        // changes (idle scans drop to ~1/sec; paused entirely while lagging).
+        try {
+            plugin.recordingManager().regionDiffRecorder().setAudienceNearby(seenPlayer);
+        } catch (Exception ignored) {
         }
     }
 

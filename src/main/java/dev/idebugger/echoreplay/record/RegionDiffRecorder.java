@@ -50,6 +50,16 @@ public final class RegionDiffRecorder {
     // which saturated small servers and tanked TPS while recording).
     private int scanCursor = 0;
     private long scanBudgetNanos = 12_000_000L;
+    // Set from the main-thread tick recorder: true while any player is inside
+    // the cuboid. With no audience the scan drops to ~1 pass/sec (changes are
+    // still caught, only later); while the server lags it pauses entirely.
+    private volatile boolean audienceNearby = true;
+    private int idlePasses = 0;
+
+    /** Main-thread only: whether any tracked player is inside the region. */
+    public void setAudienceNearby(boolean b) {
+        audienceNearby = b;
+    }
 
     public RegionDiffRecorder(EchoReplay plugin) {
         this.plugin = plugin;
@@ -72,6 +82,8 @@ public final class RegionDiffRecorder {
         current.set(s);
         lastSeen.clear();
         scanCursor = 0;
+        audienceNearby = true;
+        idlePasses = 0;
         long ms = 12L;
         try {
             ms = plugin.cfg().getLong("recording.scan-ms-per-pass", 12L);
@@ -112,6 +124,15 @@ public final class RegionDiffRecorder {
         if (s == null) {
             active = false;
             return;
+        }
+        // Idle: nobody around to see changes — ~1 pass/sec is plenty.
+        if (!audienceNearby && (++idlePasses % 20) != 0) return;
+        if (audienceNearby) idlePasses = 0;
+        // Overload: never make a lagging tick loop worse to catch a block.
+        try {
+            double[] tps = plugin.getServer().getTPS();
+            if (tps != null && tps.length > 0 && tps[0] < 17.0) return;
+        } catch (Exception ignored) {
         }
         try {
             scanAsync(s);

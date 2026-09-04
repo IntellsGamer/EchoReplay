@@ -1,5 +1,10 @@
 # EchoReplay configuration
 #
+# Config version — raised when defaults change meaning. On enable, old files
+# are backed up to config.yml.bak, missing keys are filled in, and changed
+# defaults are applied (logged). Never delete this key.
+config-version: 2
+#
 # Selection
 selection:
   # Material of the selection wand (any valid Material name)
@@ -34,6 +39,9 @@ recording:
   capture-time: true
   # Hard stop after this many minutes of recorded media time
   max-duration-minutes: 30
+  # Red "REC" bossbar for players inside the recording cuboid while a
+  # recording runs (hidden again when they leave the region). false = never.
+  rec-indicator: true
   # Region-wide diff: a background thread rescans the whole cuboid to catch
   # EVERY block change, even ones that never fire a Bukkit event (crystal
   # explosions, cancelled breaks, plugin writes, portal formation).
@@ -81,6 +89,9 @@ replay:
 # Storage
 storage:
   directory: recordings
+  # Delete recordings (and their leftover checkpoints) older than this many
+  # days on plugin start and after each save. 0 = keep forever.
+  max-age-days: 0
   # Delete the crash-safety checkpoint (.partial) right after a successful
   # save. The checkpoint is a raw uncompressed file, so it looks much bigger
   # than the final recording next to it. true = keep it as an extra safety

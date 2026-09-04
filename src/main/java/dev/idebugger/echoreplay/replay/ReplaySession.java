@@ -209,6 +209,7 @@ public final class ReplaySession {
         Integer stable = spectateStable.remove(p.getUniqueId());
         SpectateSave save = spectateSave.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        nyxExempt(p, false);
         if (stable != null) {
             restoreSpectate(p, save);
             maybeRespawnSpectatedFake(stable);
@@ -353,6 +354,9 @@ public final class ReplaySession {
     // Spectate driver dedup: last inventory hash applied per spectator (skips
     // identical full-inventory rewrites, which flicker the client).
     private final Map<UUID, Integer> lastAppliedInventoryHash = new HashMap<>();
+    // Players currently holding a Nyx anticheat exemption for spectating
+    // (toggle-symmetric: exempt once on possess, un-exempt once on release).
+    private final Set<UUID> nyxExempted = new HashSet<>();
 
     /**
      * Become the recorded player {@code name}: destroys their fake entity and
@@ -427,6 +431,8 @@ public final class ReplaySession {
             } catch (Exception ignored) {
             }
         }
+        // Teleport-driven movement trips Nyx Fly checks — exempt while driving.
+        nyxExempt(p, true);
 
         // Apply the recorded player's current state.
         EntityPose pose = entityPoses.get(stable);
@@ -512,9 +518,37 @@ public final class ReplaySession {
         }
     }
 
+    /**
+     * Toggle the Nyx anticheat exemption for a spectator (teleport-driven
+     * movement trips Fly checks). Passes silently when Nyx isn't installed.
+     * Toggle-symmetric via {@link #nyxExempted}: double-exempt can never
+     * accidentally un-exempt, and stray un-exempts are skipped.
+     */
+    private void nyxExempt(Player p, boolean exempt) {
+        if (p == null) return;
+        try {
+            if (plugin.getServer().getPluginManager().getPlugin("Nyx") == null) return;
+        } catch (Exception ignored) {
+            return;
+        }
+        UUID id = p.getUniqueId();
+        if (exempt) {
+            if (!nyxExempted.add(id)) return;
+        } else {
+            if (!nyxExempted.remove(id)) return;
+        }
+        try {
+            plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
+                    "nyx exempt " + p.getName());
+        } catch (Exception ignored) {
+            if (exempt) nyxExempted.remove(id);
+        }
+    }
+
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
     public boolean stopSpectate(Player p) {
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        nyxExempt(p, false);
         Integer stable = spectateStable.remove(p.getUniqueId());
         if (stable != null) {
             SpectateSave save = spectateSave.remove(p.getUniqueId());
@@ -557,12 +591,14 @@ public final class ReplaySession {
         // spectators frozen (driver skips null poses) instead of restoring
         // + re-possessing with chat spam for every transient event.
         // reconcileSpectatedFakes settles genuinely-gone targets afterwards.
-        if (silentApply) return;        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
+        if (silentApply) return;
+        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
             if (e.getValue() != stable) continue;
             spectateStable.remove(e.getKey());
             SpectateSave save = spectateSave.remove(e.getKey());
             lastAppliedInventoryHash.remove(e.getKey());
             Player p = Bukkit.getPlayer(e.getKey());
+            nyxExempt(p, false);
             restoreSpectate(p, save);
             pausedSpectate.computeIfAbsent(stable, k -> new HashSet<>()).add(e.getKey());
             if (p != null && p.isOnline()) {
@@ -670,6 +706,7 @@ public final class ReplaySession {
             spectateStable.remove(id);
             SpectateSave save = spectateSave.remove(id);
             lastAppliedInventoryHash.remove(id);
+            nyxExempt(Bukkit.getPlayer(id), false);
             restoreSpectate(Bukkit.getPlayer(id), save);
         }
         lastAppliedInventoryHash.clear();
@@ -691,6 +728,7 @@ public final class ReplaySession {
                 it.remove();
                 spectateSave.remove(uuid);
                 lastAppliedInventoryHash.remove(uuid);
+                nyxExempted.remove(uuid);
                 continue;
             }
             EntityPose pose = entityPoses.get(e.getValue());
