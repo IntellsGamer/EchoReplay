@@ -386,6 +386,13 @@ public final class ReplayManager implements Listener {
         }
     }
 
+    @EventHandler
+    public void onJoin(org.bukkit.event.player.PlayerJoinEvent e) {
+        if (session != null) {
+            session.hideSpectatorsFrom(e.getPlayer());
+        }
+    }
+
     static final class RecordingManagerTime {
         static String format(double sec) {
             long s = (long) sec;

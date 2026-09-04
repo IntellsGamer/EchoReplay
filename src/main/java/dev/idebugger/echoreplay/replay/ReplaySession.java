@@ -210,6 +210,7 @@ public final class ReplaySession {
         SpectateSave save = spectateSave.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
         nyxExempt(p, false);
+        unhideSpectator(p);
         if (stable != null) {
             restoreSpectate(p, save);
             maybeRespawnSpectatedFake(stable);
@@ -433,6 +434,9 @@ public final class ReplaySession {
         }
         // Teleport-driven movement trips Nyx Fly checks — exempt while driving.
         nyxExempt(p, true);
+        // The real body is driven through the live world — vanish it so other
+        // players don't watch it glide around.
+        hideSpectator(p);
 
         // Apply the recorded player's current state.
         EntityPose pose = entityPoses.get(stable);
@@ -519,6 +523,91 @@ public final class ReplaySession {
     }
 
     /**
+     * Vanish a spectator's real body from every other player — world entity
+     * AND tab list — since it is driven through the live world and otherwise
+     * everyone watches it glide around. Re-shown on every release path.
+     */
+    private void hideSpectator(Player p) {
+        if (p == null) return;
+        try {
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                if (viewer == null || viewer.getUniqueId().equals(p.getUniqueId())) continue;
+                try {
+                    viewer.hidePlayer(plugin, p);
+                } catch (Exception ignored) {
+                }
+                sendTabRemove(viewer, p);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void unhideSpectator(Player p) {
+        if (p == null) return;
+        try {
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                if (viewer == null || viewer.getUniqueId().equals(p.getUniqueId())) continue;
+                try {
+                    viewer.showPlayer(plugin, p);
+                } catch (Exception ignored) {
+                }
+                sendTabAdd(viewer, p);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Hide all live spectators from a fresh joiner (called on player join). */
+    public void hideSpectatorsFrom(Player viewer) {
+        if (viewer == null || spectateStable.isEmpty()) return;
+        for (UUID id : spectateStable.keySet()) {
+            if (id.equals(viewer.getUniqueId())) continue;
+            Player p = Bukkit.getPlayer(id);
+            if (p == null || !p.isOnline()) continue;
+            try {
+                viewer.hidePlayer(plugin, p);
+            } catch (Exception ignored) {
+            }
+            sendTabRemove(viewer, p);
+        }
+    }
+
+    private static void sendTabRemove(Player viewer, Player hidden) {
+        try {
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                    new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove(
+                            hidden.getUniqueId()));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void sendTabAdd(Player viewer, Player shown) {
+        try {
+            com.github.retrooper.packetevents.protocol.player.UserProfile profile =
+                    new com.github.retrooper.packetevents.protocol.player.UserProfile(
+                            shown.getUniqueId(), shown.getName());
+            com.github.retrooper.packetevents.protocol.player.GameMode gm =
+                    switch (shown.getGameMode()) {
+                        case CREATIVE -> com.github.retrooper.packetevents.protocol.player.GameMode.CREATIVE;
+                        case ADVENTURE -> com.github.retrooper.packetevents.protocol.player.GameMode.ADVENTURE;
+                        case SPECTATOR -> com.github.retrooper.packetevents.protocol.player.GameMode.SPECTATOR;
+                        default -> com.github.retrooper.packetevents.protocol.player.GameMode.SURVIVAL;
+                    };
+            int ping = 0;
+            try {
+                ping = shown.getPing();
+            } catch (Exception ignored) {
+            }
+            com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                    new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate(
+                            com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
+                            new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
+                                    profile, true, ping, gm, null, null)));
+        } catch (Exception ignored) {
+        }
+    }
+
+    /**
      * Toggle the Nyx anticheat exemption for a spectator (teleport-driven
      * movement trips Fly checks). Passes silently when Nyx isn't installed.
      * Toggle-symmetric via {@link #nyxExempted}: double-exempt can never
@@ -549,6 +638,7 @@ public final class ReplaySession {
     public boolean stopSpectate(Player p) {
         lastAppliedInventoryHash.remove(p.getUniqueId());
         nyxExempt(p, false);
+        unhideSpectator(p);
         Integer stable = spectateStable.remove(p.getUniqueId());
         if (stable != null) {
             SpectateSave save = spectateSave.remove(p.getUniqueId());
@@ -706,8 +796,10 @@ public final class ReplaySession {
             spectateStable.remove(id);
             SpectateSave save = spectateSave.remove(id);
             lastAppliedInventoryHash.remove(id);
-            nyxExempt(Bukkit.getPlayer(id), false);
-            restoreSpectate(Bukkit.getPlayer(id), save);
+            Player rp = Bukkit.getPlayer(id);
+            nyxExempt(rp, false);
+            unhideSpectator(rp);
+            restoreSpectate(rp, save);
         }
         lastAppliedInventoryHash.clear();
         // Paused spectators were already restored when paused.
