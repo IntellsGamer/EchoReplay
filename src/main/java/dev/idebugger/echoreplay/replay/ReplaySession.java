@@ -208,8 +208,6 @@ public final class ReplaySession {
         // (a relog is a fresh session; they spectate manually again).
         Integer stable = spectateStable.remove(p.getUniqueId());
         SpectateSave save = spectateSave.remove(p.getUniqueId());
-        lastSpectateSent.remove(p.getUniqueId());
-        spectateKeepAlive.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
         if (stable != null) {
             restoreSpectate(p, save);
@@ -259,7 +257,6 @@ public final class ReplaySession {
     /** Stop following and restore the player's previous gamemode if needed. */
     public boolean stopCamera(Player p) {
         if (camStable.remove(p.getUniqueId()) == null) return false;
-        lastCamSent.remove(p.getUniqueId());
         org.bukkit.GameMode prev = camPrevMode.remove(p.getUniqueId());
         if (prev != null && p.isOnline() && p.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
             p.setGameMode(prev);
@@ -280,7 +277,9 @@ public final class ReplaySession {
         return new ArrayList<>(out);
     }
 
-    /** Teleport each cameraman to the live position of the entity they follow. */
+    /** Teleport each cameraman to the live position of the entity they follow.
+     *  Every tick by design: recording samples every packet, so playback must
+     *  drive every tick for perfect real-time motion (no deadbands). */
     public void driveCameras() {
         if (camStable.isEmpty()) return;
         for (java.util.Iterator<Map.Entry<UUID, Integer>> it = camStable.entrySet().iterator(); it.hasNext();) {
@@ -289,14 +288,10 @@ public final class ReplaySession {
             if (p == null || !p.isOnline()) {
                 it.remove();
                 camPrevMode.remove(e.getKey());
-                lastCamSent.remove(e.getKey());
                 continue;
             }
             EntityPose pose = entityPoses.get(e.getValue());
             if (pose == null) continue; // target died — will be re-located on respawn
-            EntityPose last = lastCamSent.get(e.getKey());
-            if (last != null && !poseMoved(last, pose)) continue;
-            lastCamSent.put(e.getKey(), pose);
             try {
                 org.bukkit.Location loc = new org.bukkit.Location(world,
                         pose.pos().x(), pose.pos().y() + 1.0, pose.pos().z(),
@@ -317,7 +312,6 @@ public final class ReplaySession {
         }
         camStable.clear();
         camPrevMode.clear();
-        lastCamSent.clear();
     }
 
     // --- First-person spectate: become a recorded player ------------------
@@ -340,12 +334,8 @@ public final class ReplaySession {
     private final Map<Integer, Vitals> lastVitalsByStable = new HashMap<>();
     private final Map<Integer, byte[][]> lastInventoryByStable = new HashMap<>();
     private final Map<Integer, byte[][]> lastEquipmentByStable = new HashMap<>();
-    // Spectate driver dedup: last pose actually sent per spectator (skip no-op
-    // teleports — each teleport resets client interpolation and reads as
-    // stutter), keep-alive counter, and last inventory hash applied.
-    private final Map<UUID, EntityPose> lastSpectateSent = new HashMap<>();
-    private final Map<UUID, Integer> spectateKeepAlive = new HashMap<>();
-    private final Map<UUID, EntityPose> lastCamSent = new HashMap<>();
+    // Spectate driver dedup: last inventory hash applied per spectator (skips
+    // identical full-inventory rewrites, which flicker the client).
     private final Map<UUID, Integer> lastAppliedInventoryHash = new HashMap<>();
 
     /**
@@ -401,8 +391,6 @@ public final class ReplaySession {
             try {
                 teleportSpectator(p, new org.bukkit.Location(world, pose.pos().x(), pose.pos().y(), pose.pos().z(),
                         pose.rot().headYaw(), pose.rot().pitch()));
-                lastSpectateSent.put(p.getUniqueId(), pose);
-                spectateKeepAlive.put(p.getUniqueId(), 0);
             } catch (Exception ignored) {}
         }
         Vitals vitals = lastVitalsByStable.get(stable);
@@ -421,8 +409,6 @@ public final class ReplaySession {
 
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
     public boolean stopSpectate(Player p) {
-        lastSpectateSent.remove(p.getUniqueId());
-        spectateKeepAlive.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
         Integer stable = spectateStable.remove(p.getUniqueId());
         if (stable != null) {
@@ -465,8 +451,6 @@ public final class ReplaySession {
             if (e.getValue() != stable) continue;
             spectateStable.remove(e.getKey());
             SpectateSave save = spectateSave.remove(e.getKey());
-            lastSpectateSent.remove(e.getKey());
-            spectateKeepAlive.remove(e.getKey());
             lastAppliedInventoryHash.remove(e.getKey());
             Player p = Bukkit.getPlayer(e.getKey());
             restoreSpectate(p, save);
@@ -573,19 +557,18 @@ public final class ReplaySession {
         for (UUID id : new ArrayList<>(spectateStable.keySet())) {
             spectateStable.remove(id);
             SpectateSave save = spectateSave.remove(id);
-            lastSpectateSent.remove(id);
-            spectateKeepAlive.remove(id);
             lastAppliedInventoryHash.remove(id);
             restoreSpectate(Bukkit.getPlayer(id), save);
         }
-        lastSpectateSent.clear();
-        spectateKeepAlive.clear();
         lastAppliedInventoryHash.clear();
         // Paused spectators were already restored when paused.
         pausedSpectate.clear();
     }
 
-    /** Teleport every real player to the live recorded pose of their target. */
+    /** Teleport every real player to the live recorded pose of their target.
+     *  Every tick by design: recording samples every movement packet, so the
+     *  driver must follow every tick for perfect real-time motion. Any
+     *  deadband/interval here reads as lagged-video jumps. */
     private void driveSpectators() {
         if (spectateStable.isEmpty()) return;
         for (java.util.Iterator<Map.Entry<UUID, Integer>> it = spectateStable.entrySet().iterator(); it.hasNext();) {
@@ -595,25 +578,12 @@ public final class ReplaySession {
             if (p == null || !p.isOnline()) {
                 it.remove();
                 spectateSave.remove(uuid);
-                lastSpectateSent.remove(uuid);
-                spectateKeepAlive.remove(uuid);
                 lastAppliedInventoryHash.remove(uuid);
                 continue;
             }
             EntityPose pose = entityPoses.get(e.getValue());
             if (pose == null) continue; // target died / left — stay put;
                                         // spectate resumes on respawn / re-entry
-            // Skip no-op teleports: every teleport resets client interpolation
-            // and reads as stutter. Re-send at most every 40 ticks as drift
-            // correction even when the target stands still.
-            EntityPose last = lastSpectateSent.get(uuid);
-            int keep = spectateKeepAlive.getOrDefault(uuid, 0) + 1;
-            if (last != null && !poseMoved(last, pose) && keep < 40) {
-                spectateKeepAlive.put(uuid, keep);
-                continue;
-            }
-            spectateKeepAlive.put(uuid, 0);
-            lastSpectateSent.put(uuid, pose);
             try {
                 // Body follows the motion, view follows the recorded head.
                 teleportSpectator(p, new org.bukkit.Location(world,
@@ -623,27 +593,12 @@ public final class ReplaySession {
         }
     }
 
-    /** True when the pose changed enough for the client to notice (>2cm or >0.5deg). */
-    private static boolean poseMoved(EntityPose a, EntityPose b) {
-        double dx = a.pos().x() - b.pos().x();
-        double dy = a.pos().y() - b.pos().y();
-        double dz = a.pos().z() - b.pos().z();
-        if (dx * dx + dy * dy + dz * dz > 0.0004) return true;
-        if (Math.abs(a.rot().headYaw() - b.rot().headYaw()) > 0.5f) return true;
-        if (Math.abs(a.rot().pitch() - b.rot().pitch()) > 0.5f) return true;
-        return false;
-    }
-
-    /** Async teleport avoids the main-thread chunk-load stall; resets fall
-     *  distance so anticheats (e.g. Nyx Fly) don't flag driven movement. */
+    /** Ordered sync teleport (keeps per-tick motion exact) + fall-distance
+     *  reset so anticheats (e.g. Nyx Fly) don't flag driven movement. */
     private static void teleportSpectator(Player p, org.bukkit.Location loc) {
         try {
-            p.teleportAsync(loc);
-        } catch (NoSuchMethodError | Exception ex) {
-            try {
-                p.teleport(loc);
-            } catch (Exception ignored) {}
-        }
+            p.teleport(loc);
+        } catch (Exception ignored) {}
         try {
             p.setFallDistance(0);
         } catch (Exception ignored) {}
