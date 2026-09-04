@@ -80,6 +80,8 @@ replay:
 # Storage
 storage:
   directory: recordings
-  # Keep the crash-safety checkpoint file after a successful save (it is
-  # deleted on the next plugin start instead). false = delete immediately.
-  keep-partial-on-crash: true
+  # Delete the crash-safety checkpoint (.partial) right after a successful
+  # save. The checkpoint is a raw uncompressed file, so it looks much bigger
+  # than the final recording next to it. true = keep it as an extra safety
+  # net (it is deleted on the next plugin start instead).
+  keep-partial-on-crash: false

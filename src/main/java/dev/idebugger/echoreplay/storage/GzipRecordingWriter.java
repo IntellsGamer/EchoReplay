@@ -37,7 +37,12 @@ public final class GzipRecordingWriter implements AutoCloseable {
     /** @param gzipped false for raw checkpoint streams (no gzip framing). */
     public GzipRecordingWriter(java.io.OutputStream raw, boolean gzipped) throws IOException {
         if (gzipped) {
-            this.gzip = new GZIPOutputStream(raw);
+            // Best compression: final writes run on the IO thread and files
+            // are small, so trade a few ms of CPU for a smaller recording.
+            java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(raw) {{
+                def.setLevel(java.util.zip.Deflater.BEST_COMPRESSION);
+            }};
+            this.gzip = gz;
             this.out = new DataOutputStream(this.gzip);
         } else {
             this.gzip = null;

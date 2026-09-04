@@ -268,11 +268,15 @@ public final class RecordingManager {
         if (w == null) return; // snapshot not complete yet — nothing to anchor
         synchronized (s.checkpointLock()) {
             try {
-                // The palette grows over the recording; checkpoints append the
-                // current full palette with every batch so recovery can resolve
-                // every surviving event index (last palette section wins).
+                // The palette only grows; checkpoints rewrite it only when it
+                // grew since the last flush (last section wins on recovery).
+                // Rewriting the full palette every flush is what made .partial
+                // files many times bigger than the final recording.
                 List<String> palette = s.snapshotPalette();
-                w.writePalette(palette);
+                if (palette.size() != s.lastCheckpointPaletteSize()) {
+                    w.writePalette(palette);
+                    s.setLastCheckpointPaletteSize(palette.size());
+                }
                 for (TimelineEvent ev : batch) {
                     byte[] body = TimelineCodec.encodeBody(ev, palette);
                     w.appendTimelineEvent(ev.tickMillis(), body, (byte) TimelineCodec.typeId(ev));
@@ -420,7 +424,7 @@ public final class RecordingManager {
                         fsizeX, fsizeY, fsizeZ, fs.raw(), packSnapNbt(fs, fnbt), fev);
                 plugin.recordingIndex().put(new RecordingEntry(fname, fworldUuid, fworldName, fd, out.length(),
                         fsTime, fc.min().x(), fc.min().y(), fc.min().z(), fc.max().x(), fc.max().y(), fc.max().z()));
-                boolean keep = plugin.cfg().getBoolean("storage.keep-partial-on-crash", true);
+                boolean keep = plugin.cfg().getBoolean("storage.keep-partial-on-crash", false);
                 s.closeCheckpointWriter();
                 File cp = s.checkpointFile();
                 if (!keep && cp != null) cp.delete();

@@ -68,6 +68,9 @@ public final class RecordingSession {
     // Events already written to the checkpoint; re-merged into the final file
     // on stop so the full timeline is contiguous.
     private final List<TimelineEvent> committedEvents = new ArrayList<>();
+    // Palette size at the last checkpoint flush (checkpoints only rewrite the
+    // palette when it grew — the file stays small).
+    private int lastCheckpointPaletteSize = -1;
 
     // World time of the previous recording tick (for change detection).
     private long lastWorldTime = -1;
@@ -187,14 +190,16 @@ public final class RecordingSession {
         mediaClock.addAndGet(deltaMs);
     }
 
-    /** Emit a WorldTime event when the world's time-of-day changed since the last tick. */
+    /** Emit a WorldTime event at most once per in-game second (world time
+     *  ticks 20x/sec; per-tick events are pure filesize with no visible
+     *  difference for time-of-day playback). */
     public void emitWorldTimeIfChanged() {
         long t = world().getFullTime();
         if (lastWorldTime < 0) {
             lastWorldTime = t;
             return;
         }
-        if (t != lastWorldTime) {
+        if (t / 20 != lastWorldTime / 20) {
             lastWorldTime = t;
             emit(new TimelineEvent.WorldTime(mediaMillis(), t, !world().isFixedTime()));
         }
@@ -270,5 +275,13 @@ public final class RecordingSession {
         List<TimelineEvent> out = new ArrayList<>(committedEvents);
         committedEvents.clear();
         return out;
+    }
+
+    public synchronized int lastCheckpointPaletteSize() {
+        return lastCheckpointPaletteSize;
+    }
+
+    public synchronized void setLastCheckpointPaletteSize(int n) {
+        lastCheckpointPaletteSize = n;
     }
 }
