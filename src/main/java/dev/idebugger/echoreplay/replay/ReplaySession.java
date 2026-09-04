@@ -865,7 +865,7 @@ public final class ReplaySession {
                 done.add(stable); // no spawn record — skip
                 continue;
             }
-            fakes.positionSync(p, runtime, pos, rot, true);
+            fakes.teleport(p, runtime, pos, rot.yaw(), rot.pitch(), true);
             fakes.headLook(p, runtime, rot.headYaw());
             pushStance(runtime);
             done.add(stable);
@@ -1043,6 +1043,7 @@ public final class ReplaySession {
         dyingRuntimes.clear();
         stableToRuntime.clear();
         runtimeHeadYaw.clear();
+        fakes.clear();
         // Put the region back to its pre-playback state (world mode only),
         // streamed so even huge regions don't freeze the tick loop.
         if (!virtual && liveCaptured) {
@@ -1063,6 +1064,7 @@ public final class ReplaySession {
         }
         stableToRuntime.clear();
         spawnedFor.clear();
+        fakes.clear();
         entityPoses.clear();
         nameByStable.clear();
         runtimeFlags.clear();
@@ -1424,7 +1426,7 @@ public final class ReplaySession {
         if (existing != null) {
             entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
             for (Player p : tickViewers) {
-                fakes.positionSync(p, existing, s.pos(), s.rot(), true);
+                fakes.teleport(p, existing, s.pos(), s.rot().yaw(), s.rot().pitch(), true);
             }
             // Also replay equipment for respawned player
             replayPlayerEquipment(existing, s);
@@ -1506,7 +1508,7 @@ public final class ReplaySession {
             int existing = stableToRuntime.get(s.npcId());
             entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
             for (Player p : tickViewers) {
-                fakes.positionSync(p, existing, s.pos(), s.rot(), true);
+                fakes.teleport(p, existing, s.pos(), s.rot().yaw(), s.rot().pitch(), true);
             }
             return;
         }
@@ -1549,7 +1551,7 @@ public final class ReplaySession {
             return;
         }
         for (Player p : tickViewers) {
-            fakes.positionSync(p, runtime, m.pos(), m.rot(), m.onGround());
+            fakes.move(p, runtime, m.pos(), m.rot().yaw(), m.rot().pitch(), m.onGround());
         }
         syncHead(m.npcId(), runtime, m.rot().headYaw());
     }
@@ -1564,7 +1566,7 @@ public final class ReplaySession {
             return;
         }
         for (Player p : tickViewers) {
-            fakes.positionSync(p, runtime, t.pos(), t.rot(), true);
+            fakes.teleport(p, runtime, t.pos(), t.rot().yaw(), t.rot().pitch(), true);
         }
         // Teleports re-anchor the client entity: always refresh the head.
         runtimeHeadYaw.put(t.npcId(), t.rot().headYaw());
@@ -1880,6 +1882,7 @@ public final class ReplaySession {
     private void destroyFor(int runtimeId) {
         runtimeFlags.remove(runtimeId);
         runtimePose.remove(runtimeId);
+        fakes.forget(runtimeId);
         Set<UUID> ids = spawnedFor.remove(runtimeId);
         if (ids == null) return;
         for (UUID id : ids) {

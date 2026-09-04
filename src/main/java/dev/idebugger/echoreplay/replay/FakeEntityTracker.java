@@ -46,6 +46,29 @@ public final class FakeEntityTracker {
         return nextId.getAndDecrement();
     }
 
+    /**
+     * Last absolute position sent per fake runtime id. All viewers share the
+     * same packet stream for a runtime, so one entry covers everyone (spawns
+     * seed it, destroys clear it). Relative move packets interpolate on the
+     * client while absolute snaps do not — moves go relative, teleports stay
+     * absolute.
+     */
+    private final java.util.Map<Integer, double[]> lastPos = new java.util.HashMap<>();
+
+    /** Drop all move state (playback stop / entity reset). */
+    public void clear() {
+        lastPos.clear();
+    }
+
+    /** Drop move state for one fake (called once per destroyFor, not per viewer). */
+    public void forget(int runtimeId) {
+        lastPos.remove(runtimeId);
+    }
+
+    private void seed(int runtimeId, Vec3d pos) {
+        lastPos.put(runtimeId, new double[]{pos.x(), pos.y(), pos.z()});
+    }
+
     /** True once the high id band is used up (spawning must stop). */
     public boolean isExhausted() {
         return nextId.get() < 0;
@@ -79,6 +102,7 @@ public final class FakeEntityTracker {
                         rot.yaw(), rot.pitch()),
                 0f, 0, null);
         send(viewer, spawn);
+        seed(runtimeId, pos);
     }
 
     public void spawnMob(Player viewer, int runtimeId, UUID uuid, EntityType type, Vec3d pos, Rotation rot) {
@@ -88,6 +112,7 @@ public final class FakeEntityTracker {
                         rot.yaw(), rot.pitch()),
                 0f, 0, null);
         send(viewer, spawn);
+        seed(runtimeId, pos);
     }
 
     public void destroy(Player viewer, int runtimeId) {
@@ -100,6 +125,52 @@ public final class FakeEntityTracker {
                 com.github.retrooper.packetevents.util.Vector3d.zero(),
                 rot.yaw(), rot.pitch());
         send(viewer, new WrapperPlayServerEntityPositionSync(runtimeId, data, onGround));
+        seed(runtimeId, pos);
+    }
+
+    /**
+     * Smooth per-tick motion: small deltas go out as relative move packets
+     * (the client interpolates these), large jumps as absolute teleports.
+     * Deltas are quantized to the wire unit (1/4096 block) before advancing
+     * state so sub-quantum jitter accumulates instead of drifting the render.
+     */
+    public void move(Player viewer, int runtimeId, Vec3d pos, float yaw, float pitch, boolean onGround) {
+        double[] prev = lastPos.get(runtimeId);
+        if (prev == null) {
+            teleport(viewer, runtimeId, pos, yaw, pitch, onGround);
+            return;
+        }
+        double dx = pos.x() - prev[0];
+        double dy = pos.y() - prev[1];
+        double dz = pos.z() - prev[2];
+        if (dx == 0 && dy == 0 && dz == 0) {
+            send(viewer, new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRotation(
+                    runtimeId, yaw, pitch, onGround));
+            return;
+        }
+        if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8 || Math.abs(dz) >= 8) {
+            teleport(viewer, runtimeId, pos, yaw, pitch, onGround);
+            return;
+        }
+        long qx = Math.round(dx * 4096.0);
+        long qy = Math.round(dy * 4096.0);
+        long qz = Math.round(dz * 4096.0);
+        if (qx == 0 && qy == 0 && qz == 0) return; // hold for accumulation
+        send(viewer, new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityRelativeMoveAndRotation(
+                runtimeId, qx / 4096.0, qy / 4096.0, qz / 4096.0, yaw, pitch, onGround));
+        prev[0] += qx / 4096.0;
+        prev[1] += qy / 4096.0;
+        prev[2] += qz / 4096.0;
+    }
+
+    /** Absolute re-anchor (teleports, respawns, late-join syncs). Seeds move state. */
+    public void teleport(Player viewer, int runtimeId, Vec3d pos, float yaw, float pitch, boolean onGround) {
+        send(viewer, new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityTeleport(
+                runtimeId,
+                new com.github.retrooper.packetevents.protocol.world.Location(
+                        pos.x(), pos.y(), pos.z(), yaw, pitch),
+                onGround));
+        seed(runtimeId, pos);
     }
 
     public void headLook(Player viewer, int runtimeId, float headYaw) {
