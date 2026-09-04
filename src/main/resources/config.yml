@@ -50,8 +50,10 @@ replay:
   # restoring the world (no world writes at all)
   virtual-packets-only: false
   # Force viewers into spectator mode while watching (previous gamemode is
-  # restored when they leave or playback stops)
-  force-spectator: true
+  # restored when they leave or playback stops). Disabled by default: playing
+  # a replay no longer yanks you into vanilla spectator mode; use /er cam
+  # or /er spectate when you actually want a spectator view.
+  force-spectator: false
   # Players within this many blocks of the cuboid see the replay automatically
   auto-watch-radius: 32
   # Capture the live terrain before a world-mode replay and restore it on stop

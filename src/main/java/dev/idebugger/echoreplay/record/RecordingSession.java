@@ -64,6 +64,7 @@ public final class RecordingSession {
     private final Object checkpointLock = new Object();
     private File checkpointFile;
     private GzipRecordingWriter checkpointWriter;
+    private java.io.OutputStream checkpointStream;
     // Events already written to the checkpoint; re-merged into the final file
     // on stop so the full timeline is contiguous.
     private final List<TimelineEvent> committedEvents = new ArrayList<>();
@@ -216,14 +217,23 @@ public final class RecordingSession {
     public void openCheckpointWriter(File f) {
         synchronized (checkpointLock) {
             if (checkpointWriter != null) return;
-            try (FileOutputStream fos = new FileOutputStream(f)) {
+            try {
+                // Keep the stream OPEN across flushes (one continuous section
+                // stream); closeCheckpointWriter finishes it. Never use
+                // try-with-resources here — it would close the stream
+                // immediately and every later flush would fail with
+                // "Stream Closed".
+                java.io.OutputStream fos = new FileOutputStream(f);
+                checkpointStream = fos;
                 checkpointWriter = new GzipRecordingWriter(fos, false);
             } catch (Exception e) {
                 checkpointWriter = null;
+                if (checkpointStream != null) {
+                    try { checkpointStream.close(); } catch (Exception ignored) {}
+                    checkpointStream = null;
+                }
                 return;
             }
-            // NOTE: the stream is intentionally left OPEN across flushes (one
-            // continuous section stream); closeCheckpointWriter finishes it.
         }
     }
 
@@ -243,6 +253,10 @@ public final class RecordingSession {
                 // A failed close just leaves a shorter-but-still-parseable file.
             }
             checkpointWriter = null;
+            if (checkpointStream != null) {
+                try { checkpointStream.close(); } catch (Exception ignored) {}
+                checkpointStream = null;
+            }
         }
     }
 

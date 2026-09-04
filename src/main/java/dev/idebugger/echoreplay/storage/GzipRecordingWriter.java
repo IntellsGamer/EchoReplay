@@ -167,6 +167,8 @@ public final class GzipRecordingWriter implements AutoCloseable {
         if (gzip != null) {
             gzip.finish();
             gzip.close();
+        } else {
+            out.close();
         }
     }
 }

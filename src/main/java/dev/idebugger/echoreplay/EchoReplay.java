@@ -80,6 +80,17 @@ public final class EchoReplay extends JavaPlugin {
         tickTaskId = getServer().getScheduler()
                 .runTaskTimer(this, this::onTick, 1L, 1L).getTaskId();
 
+        // Warm up PacketEvents block-state mappings off the main thread. The
+        // first conversion otherwise happens on the first /er play and stalls
+        // the tick ~500ms ("Can't keep up" + client stutter on resume).
+        ioExecutor.execute(() -> {
+            try {
+                org.bukkit.block.data.BlockData air =
+                        getServer().createBlockData("minecraft:air");
+                io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitBlockData(air);
+            } catch (Exception ignored) {}
+        });
+
         Text.broadcast(Text.mm("<gray>EchoReplay <green>enabled</green>.</gray>"));
     }
 
