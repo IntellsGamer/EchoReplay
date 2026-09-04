@@ -104,9 +104,79 @@ public final class EchoReplay extends JavaPlugin {
         INSTANCE.set(null);
     }
 
+    private int outlineCounter = 0;
+
     private void onTick() {
         recordingManager.onTick();
         replayManager.onTick();
+        // Selection outline particles, throttled to every 10th tick.
+        if ((++outlineCounter % 10) == 0) {
+            renderSelectionOutlines();
+        }
+    }
+
+    /**
+     * END_ROD wireframe around each player's complete selection, only for
+     * players with {@code selection.outline-particles} enabled and only
+     * while they are reasonably close to it. Budget-capped per player per
+     * pass so a huge selection cannot spike a tick.
+     */
+    private void renderSelectionOutlines() {
+        if (!cfg().getBoolean("selection.outline-particles", false)) return;
+        for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+            dev.idebugger.echoreplay.select.Selection sel = selectionManager.getIfExists(p);
+            if (sel == null || !sel.isComplete()) continue;
+            dev.idebugger.echoreplay.select.Cuboid c = sel.cuboid();
+            org.bukkit.Location loc = p.getLocation();
+            // Skip viewers far away: particle packets would just be dropped
+            // and the loop would still cost CPU.
+            double dx = Math.max(c.min().x() - loc.getBlockX(), Math.max(loc.getBlockX() - c.max().x(), 0));
+            double dy = Math.max(c.min().y() - loc.getBlockY(), Math.max(loc.getBlockY() - c.max().y(), 0));
+            double dz = Math.max(c.min().z() - loc.getBlockZ(), Math.max(loc.getBlockZ() - c.max().z(), 0));
+            if (dx * dx + dy * dy + dz * dz > 80 * 80) continue;
+            int[] budget = {512};
+            org.bukkit.Particle part = org.bukkit.Particle.END_ROD;
+            for (int axis = 0; axis < 3; axis++) {
+                for (int ox = 0; ox < 2; ox++) {
+                    for (int oz = 0; oz < 2; oz++) {
+                        outlineEdge(p, part, c, axis, ox, oz, budget);
+                    }
+                }
+            }
+        }
+    }
+
+    /** One cuboid edge: the axis coordinate runs min→max, the others fixed. */
+    private void outlineEdge(org.bukkit.entity.Player p, org.bukkit.Particle part,
+                             dev.idebugger.echoreplay.select.Cuboid c,
+                             int axis, int i, int j, int[] budget) {
+        double from, to;
+        double fx = 0, fy = 0, fz = 0;
+        if (axis == 0) { // X runs; i fixes Y, j fixes Z
+            from = c.min().x(); to = c.max().x();
+            fy = i == 0 ? c.min().y() : c.max().y();
+            fz = j == 0 ? c.min().z() : c.max().z();
+        } else if (axis == 1) { // Y runs; i fixes X, j fixes Z
+            from = c.min().y(); to = c.max().y();
+            fx = i == 0 ? c.min().x() : c.max().x();
+            fz = j == 0 ? c.min().z() : c.max().z();
+        } else { // Z runs; i fixes X, j fixes Y
+            from = c.min().z(); to = c.max().z();
+            fx = i == 0 ? c.min().x() : c.max().x();
+            fy = j == 0 ? c.min().y() : c.max().y();
+        }
+        int span = (int) Math.abs(to - from);
+        int step = Math.max(1, span / 32);
+        for (double t = from; t <= to + 1e-9 && budget[0] > 0; t += step) {
+            double x = axis == 0 ? t : fx;
+            double y = axis == 1 ? t : fy;
+            double z = axis == 2 ? t : fz;
+            budget[0]--;
+            try {
+                p.spawnParticle(part, x, y, z, 1);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public SelectionManager selectionManager() { return selectionManager; }

@@ -23,7 +23,9 @@ import org.bukkit.persistence.PersistentDataType;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The /echoreplay (/er, /replay) command tree.
@@ -33,10 +35,29 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     private final EchoReplay plugin;
     private static final NamespacedKey WAND_KEY =
             NamespacedKey.fromString("echoreplay:wand");
-    private static final Material WAND_MATERIAL = Material.GOLDEN_AXE;
+    /** Pending two-step delete: sender key -> recording name to delete. */
+    private final Map<CommandSender, String> pendingDeletes = new HashMap<>();
 
     public EchoCommand(EchoReplay plugin) {
         this.plugin = plugin;
+    }
+
+    /** Central permission gate. Node per subcommand (see plugin.yml). */
+    private boolean checkPerm(CommandSender s, String node) {
+        if (s.hasPermission(node)) return true;
+        s.sendMessage(Text.mm("<red>No permission (" + node + ").</red>"));
+        return false;
+    }
+
+    /** Wand item from {@code selection.wand-material} (default GOLDEN_AXE). */
+    private Material wandMaterial() {
+        try {
+            Material m = Material.matchMaterial(
+                    plugin.cfg().getString("selection.wand-material", "GOLDEN_AXE"));
+            return (m != null && m.isItem()) ? m : Material.GOLDEN_AXE;
+        } catch (Exception e) {
+            return Material.GOLDEN_AXE;
+        }
     }
 
     public void register() {
@@ -80,8 +101,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "rewind" -> rewind(sender, args);
             case "stopplay" -> stopplay(sender);
             case "leave" -> leave(sender);
-            case "watch" -> watch(sender, args);
+            case "watch" -> watch(sender);
             case "cam" -> cam(sender, args);
+            case "spectate" -> spectate(sender, args);
+            case "stopspectate" -> stopspectate(sender);
             case "list" -> list(sender);
             case "info" -> info(sender, args);
             case "delete" -> delete(sender, args);
@@ -110,18 +133,16 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>Selection:</gray> <yellow>/er wand, pos1, pos2, select, expand, contract, shift, selinfo, clear</yellow>
             <gray>Record:</gray> <yellow>/er record <name>, stop, cancel, save, status, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
+            <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
             """));
     }
 
     private void wand(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.wand")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.wand")) {
-                p.sendMessage(Text.mm("<red>No permission.</red>"));
-                return;
-            }
-            ItemStack wand = new ItemStack(WAND_MATERIAL);
+            ItemStack wand = new ItemStack(wandMaterial());
             ItemMeta meta = wand.getItemMeta();
             meta.displayName(Text.mm("<gradient:#7af:#fff>Echo Wand</gradient>"));
             meta.getPersistentDataContainer().set(WAND_KEY, PersistentDataType.INTEGER, 1);
@@ -140,11 +161,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void requirePos(CommandSender s, String[] args, boolean first) {
+        if (!checkPerm(s, "echoreplay.select")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.select")) {
-                p.sendMessage(Text.mm("<red>No permission.</red>"));
-                return;
-            }
             Selection sel = plugin.selectionManager().get(p);
             BlockPos pos;
             if (args.length >= 4) {
@@ -165,11 +183,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void select(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.select")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.select")) {
-                p.sendMessage(Text.mm("<red>No permission.</red>"));
-                return;
-            }
             if (args.length < 7) {
                 p.sendMessage(Text.mm("<red>Usage: /er select <x1> <y1> <z1> <x2> <y2> <z2></red>"));
                 return;
@@ -189,8 +204,9 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void expand(CommandSender s, String[] args, boolean grow) {
+        if (!checkPerm(s, "echoreplay.select")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.select") || args.length < 2) {
+            if (args.length < 2) {
                 p.sendMessage(Text.mm("<red>Usage: /er expand <amount> [dir]</red>"));
                 return;
             }
@@ -239,8 +255,9 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void shift(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.select")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.select") || args.length < 3) {
+            if (args.length < 3) {
                 p.sendMessage(Text.mm("<red>Usage: /er shift <amount> <dir></red>"));
                 return;
             }
@@ -297,8 +314,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void record(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.record")) return;
         requirePlayer(s, p -> {
-            if (!p.hasPermission("echoreplay.record")) return;
             if (args.length < 2) {
                 p.sendMessage(Text.mm("<red>Usage: /er record <name></red>"));
                 return;
@@ -310,21 +327,25 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void stop(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.record")) return;
         String msg = plugin.recordingManager().stop();
         s.sendMessage(Text.mm(msg));
     }
 
     private void cancel(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.record")) return;
         String msg = plugin.recordingManager().cancel();
         s.sendMessage(Text.mm(msg));
     }
 
     private void save(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.record")) return;
         String msg = plugin.recordingManager().stop();
         s.sendMessage(Text.mm(msg));
     }
 
     private void status(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.use")) return;
         var sess = plugin.recordingManager().activeSession();
         if (sess == null) {
             s.sendMessage(Text.mm("<gray>No recording in progress.</gray>"));
@@ -339,6 +360,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void play(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.play")) return;
         if (args.length < 2) {
             s.sendMessage(Text.mm("<red>Usage: /er play <name> [virtual|world]</red>"));
             return;
@@ -351,14 +373,17 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void pause(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         s.sendMessage(Text.mm(plugin.replayManager().pause()));
     }
 
     private void resume(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         s.sendMessage(Text.mm(plugin.replayManager().resume()));
     }
 
     private void speed(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         if (args.length < 2) {
             s.sendMessage(Text.mm("<red>Usage: /er speed <0.25|0.5|1|2|4|8|16></red>"));
             return;
@@ -372,6 +397,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void seek(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         if (args.length < 2) {
             s.sendMessage(Text.mm("<red>Usage: /er seek <seconds|mm:ss|marker-name></red>"));
             return;
@@ -393,33 +419,98 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void ff(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         double sec = args.length > 1 ? parseOrDefault(args[1], 10) : 10;
         s.sendMessage(Text.mm(plugin.replayManager().forward(sec)));
     }
 
     private void rewind(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         double sec = args.length > 1 ? parseOrDefault(args[1], 10) : 10;
         s.sendMessage(Text.mm(plugin.replayManager().rewind(sec)));
     }
 
     private void stopplay(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         s.sendMessage(Text.mm(plugin.replayManager().stopPlay(false)));
     }
 
     private void leave(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.control")) return;
         requirePlayer(s, p -> s.sendMessage(Text.mm(plugin.replayManager().leave(p))));
     }
 
-    private void watch(CommandSender s, String[] args) {
+    private void watch(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.play")) return;
         requirePlayer(s, p -> s.sendMessage(Text.mm(plugin.replayManager().watch(p))));
     }
 
     private void cam(CommandSender s, String[] args) {
-        // simplified: attach (via spectator marker) is a TODO; report available
-        s.sendMessage(Text.mm("<yellow>Camera attach implemented via spectator control (see docs).</yellow>"));
+        if (!checkPerm(s, "echoreplay.use")) return;
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            // /er cam off  -> stop following
+            if (args.length < 2 || args[1].equalsIgnoreCase("off")) {
+                if (rep.stopCamera(p)) s.sendMessage(Text.mm("<gray>Camera stopped.</gray>"));
+                else s.sendMessage(Text.mm("<gray>You are not following anyone.</gray>"));
+                return;
+            }
+            if (!rep.isViewer(p)) {
+                rep.addViewer(p);
+            }
+            if (rep.startCamera(p, args[1])) {
+                s.sendMessage(Text.mm("<green>Following '" + args[1] + "' — type /er cam off to stop.</green>"));
+            } else {
+                s.sendMessage(Text.mm("<red>Entity '" + args[1] + "' is not in the replay right now.\n"
+                        + "<gray>Live: " + rep.liveEntityNames() + "</gray>"));
+            }
+        });
+    }
+
+    private void spectate(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.play")) return;
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            if (args.length < 2) {
+                s.sendMessage(Text.mm("<red>Usage: /er spectate <player-name></red>"));
+                return;
+            }
+            if (rep.startSpectate(p, args[1])) {
+                s.sendMessage(Text.mm("<green>You are now spectating '<aqua>" + args[1]
+                        + "</aqua>' in first person. <gray>Type /er stopspectate to leave.</gray>"));
+            } else {
+                s.sendMessage(Text.mm("<red>Recorded player '" + args[1]
+                        + "' is not alive in the replay right now.</red>"));
+            }
+        });
+    }
+
+    private void stopspectate(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.play")) return;
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            if (rep.stopSpectate(p)) {
+                s.sendMessage(Text.mm("<green>Spectate ended — your previous state was restored.</green>"));
+            } else {
+                s.sendMessage(Text.mm("<gray>You are not spectating anyone.</gray>"));
+            }
+        });
     }
 
     private void list(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.use")) return;
         var entries = plugin.recordingIndex().all();
         if (entries.isEmpty()) {
             s.sendMessage(Text.mm("<gray>No recordings.</gray>"));
@@ -437,6 +528,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void info(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.use")) return;
         if (args.length < 2) {
             s.sendMessage(Text.mm("<red>Usage: /er info <name></red>"));
             return;
@@ -452,20 +544,38 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void delete(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.delete")) return;
         if (args.length < 2) {
             s.sendMessage(Text.mm("<red>Usage: /er delete <name></red>"));
             return;
         }
-        File f = new File(plugin.recordingManager().recordingsDir(), args[1] + ".echoreplay.gz");
-        if (f.exists() && f.delete()) {
-            plugin.recordingIndex().remove(args[1]);
-            s.sendMessage(Text.mm("<green>Deleted '" + args[1] + "'.</green>"));
+        String name = args[1];
+        File f = new File(plugin.recordingManager().recordingsDir(), name + ".echoreplay.gz");
+        if (!f.exists()) {
+            s.sendMessage(Text.mm("<red>No recording named '" + name + "'.</red>"));
+            return;
+        }
+        // Two-step: first call arms the delete, /er confirm performs it.
+        if (!pendingDeletes.containsKey(s)) {
+            pendingDeletes.put(s, name);
+            s.sendMessage(Text.mm("<yellow>Type /er confirm to remove '" + name + "'.</yellow>"));
+            return;
+        }
+        String armed = pendingDeletes.remove(s);
+        if (!armed.equals(name)) {
+            s.sendMessage(Text.mm("<red>Not the armed delete (armed: '" + armed + "').</red>"));
+            return;
+        }
+        if (f.delete()) {
+            plugin.recordingIndex().remove(name);
+            s.sendMessage(Text.mm("<green>Deleted '" + name + "'.</green>"));
         } else {
-            s.sendMessage(Text.mm("<red>Could not delete. Run once and confirm? Use /er delete <name> then /er confirm.</red>"));
+            s.sendMessage(Text.mm("<red>Could not delete the file.</red>"));
         }
     }
 
     private void rename(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.delete")) return;
         if (args.length < 3) {
             s.sendMessage(Text.mm("<red>Usage: /er rename <old> <new></red>"));
             return;
@@ -487,10 +597,23 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void confirm(CommandSender s) {
-        s.sendMessage(Text.mm("<gray>Nothing pending confirmation.</gray>"));
+        if (!checkPerm(s, "echoreplay.delete")) return;
+        String name = pendingDeletes.remove(s);
+        if (name == null) {
+            s.sendMessage(Text.mm("<gray>Nothing pending confirmation.</gray>"));
+            return;
+        }
+        File f = new File(plugin.recordingManager().recordingsDir(), name + ".echoreplay.gz");
+        if (f.exists() && f.delete()) {
+            plugin.recordingIndex().remove(name);
+            s.sendMessage(Text.mm("<green>Deleted '" + name + "'.</green>"));
+        } else {
+            s.sendMessage(Text.mm("<red>No recording file named '" + name + "' anymore.</red>"));
+        }
     }
 
     private void marker(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.record")) return;
         var sess = plugin.recordingManager().activeSession();
         if (sess == null) {
             s.sendMessage(Text.mm("<red>No recording in progress.</red>"));
@@ -502,6 +625,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void border(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.border")) return;
         requirePlayer(s, p -> {
             var prefs = plugin.borderPrefs();
             if (prefs == null) {
@@ -571,8 +695,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "stop", "cancel", "save", "status", "play", "pause", "resume",
-                "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "list", "info",
-                "delete", "rename", "confirm", "marker", "border");
+                "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "spectate",
+                "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
             for (String s : subs) if (s.startsWith(args[0].toLowerCase())) out.add(s);
@@ -589,6 +713,23 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("border")) {
             return Arrays.asList("on", "off", "toggle", "status").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("cam") || args[0].equalsIgnoreCase("spectate"))) {
+            var rep = plugin.replayManager().session();
+            if (rep != null) {
+                List<String> out = new ArrayList<>();
+                if (args[0].equalsIgnoreCase("cam") && "off".startsWith(args[1].toLowerCase())) {
+                    out.add("off");
+                }
+                for (String n : rep.liveEntityNames()) {
+                    if (n.toLowerCase().startsWith(args[1].toLowerCase())) out.add(n);
+                }
+                return out;
+            }
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("rename")) {
+            return plugin.recordingIndex().all().stream().map(e -> e.name())
+                    .filter(n -> n.startsWith(args[1])).collect(java.util.stream.Collectors.toList());
         }
         return List.of();
     }

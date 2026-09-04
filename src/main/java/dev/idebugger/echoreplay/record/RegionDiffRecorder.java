@@ -42,7 +42,7 @@ public final class RegionDiffRecorder {
     private volatile boolean active = false;
     private ScheduledExecutorService executor;
     private ScheduledFuture<?> task;
-    private final long passDelayMs;
+    private volatile long passDelayMs = 50L;
     // Resumable sweep cursor: linear cell index into the cuboid volume.
     // Each pass processes cells until the millisecond budget is exhausted,
     // then resumes here next pass, so arbitrarily large regions stream
@@ -53,11 +53,15 @@ public final class RegionDiffRecorder {
 
     public RegionDiffRecorder(EchoReplay plugin) {
         this.plugin = plugin;
-        this.passDelayMs = 50; // ~every 2.5 server ticks; budgeted slice each pass
     }
 
-    public void configure(int ignoredIntervalTicks) {
-        // full-time diff: scan the whole region on every pass (no throttling)
+    /**
+     * @param intervalTicks schedule a diff pass every N server ticks
+     *                      (1 = full-time; clamped to 1..20)
+     */
+    public void configure(int intervalTicks) {
+        int ticks = Math.max(1, Math.min(20, intervalTicks));
+        this.passDelayMs = ticks * 50L;
         Nms.logState();
     }
 
@@ -100,11 +104,6 @@ public final class RegionDiffRecorder {
             executor.shutdownNow();
             executor = null;
         }
-    }
-
-    /** Kept for interface compatibility; scanning is async and not tick-driven. */
-    public void tick() {
-        // no-op
     }
 
     private void runPassAsync() {
@@ -159,7 +158,14 @@ public final class RegionDiffRecorder {
             if (chunk == null) continue;
             Object state = Nms.blockState(chunk, x & 15, y, z & 15);
             String str = Nms.toStringSafe(state);
-            long key = ((long) x << 40) | ((long) z << 20) | (y & 0xFFFFF);
+            // Collision-free packing: 21 offset bits per axis (x/z cover
+            // +/-1,048,576 blocks, y covers -64..+2,097,095). The previous
+            // raw shift allowed negative/large z to sign-extend into x's bits,
+            // making two different blocks share a baseline and silently
+            // dropping block changes at extreme coordinates.
+            long key = (((long) (x + 1048576) & 0x1FFFFF) << 42)
+                    | (((long) (z + 1048576) & 0x1FFFFF) << 21)
+                    | ((long) (y + 64) & 0x1FFFFF);
             byte[] enc = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             byte[] prev = lastSeen.get(key);
             if (prev == null) {

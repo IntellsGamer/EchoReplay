@@ -2,6 +2,8 @@ package dev.idebugger.echoreplay.replay;
 
 import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
+import dev.idebugger.echoreplay.model.Rotation;
+import dev.idebugger.echoreplay.model.Vec3d;
 import dev.idebugger.echoreplay.select.Cuboid;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
@@ -61,6 +63,30 @@ public final class ReplaySession {
     private boolean started = false;
     private boolean stopping = false;
     private double skipSfxAbove = 2.0;
+    private final boolean driveWorldTime;
+    private final boolean liveBackup;
+    private final boolean forceSpectator;
+    private volatile boolean entityIdExhaustedLogged = false;
+
+    // Late joiners (mid-playback /er watch, or players who walk into the
+    // auto-watch radius) are synced to the current state by snapshot-spawning
+    // every live entity (current state, live runtime id) plus streaming the
+    // past block changes in virtual mode, targeting only them.
+    // value = next block-event index to apply (virtual mode only).
+    private final Map<UUID, Integer> pendingSyncs = new HashMap<>();
+    // Per late-joiner: which stable ids have already been snapshot-spawned.
+    private final Map<UUID, java.util.Set<Integer>> syncedStablesFor = new HashMap<>();
+    // Last spawn event per stable id, so a late joiner can be given the
+    // entity's skin/equipment/type instead of re-deriving it.
+    private final Map<Integer, TimelineEvent.PlayerSpawn> playerSpawnByStable = new HashMap<>();
+    private final Map<Integer, TimelineEvent.EntitySpawn> entitySpawnByStable = new HashMap<>();
+    // True while fast-applying events out of live time (seek catch-up):
+    // transient effects (sound, particle, chat, damage flash) are skipped so
+    // a 10-minute seek does not replay a decade of chat and SFX at once.
+    private volatile boolean silentApply = false;
+    // Viewers force-switched to spectator: their previous gamemode, restored
+    // when they leave or playback stops.
+    private final Map<UUID, org.bukkit.GameMode> forcedModes = new HashMap<>();
 
     // track per-stable whether currently spawned viewer-visible
     private final Map<Integer, Integer> stableToRuntime = new HashMap<>();
@@ -135,6 +161,9 @@ public final class ReplaySession {
         this.timeline = rec.timeline() != null ? rec.timeline() : List.of();
         clock.setSpeed(plugin.cfg().getDouble("replay.default-speed", 1.0));
         skipSfxAbove = plugin.cfg().getDouble("replay.skip-sfx-when-speed-above", 2.0);
+        driveWorldTime = plugin.cfg().getBoolean("replay.drive-world-time", false);
+        liveBackup = plugin.cfg().getBoolean("replay.backup-live-cuboid", true);
+        forceSpectator = plugin.cfg().getBoolean("replay.force-spectator", true);
         long budgetMs = 8L;
         try {
             budgetMs = plugin.cfg().getLong("replay.phase-max-ms-per-tick", 8L);
@@ -157,10 +186,41 @@ public final class ReplaySession {
         if (!viewers.contains(p.getUniqueId())) {
             viewers.add(p.getUniqueId());
         }
+        if (forceSpectator && p.getGameMode() != org.bukkit.GameMode.SPECTATOR) {
+            forcedModes.put(p.getUniqueId(), p.getGameMode());
+            p.setGameMode(org.bukkit.GameMode.SPECTATOR);
+        }
+        // If playback is already running, catch this viewer up to the current
+        // state (entities always; blocks in virtual mode).
+        if (started && phase == Phase.RUN) {
+            pendingSyncs.put(p.getUniqueId(), 0);
+        }
     }
 
     public void removeViewer(Player p) {
         viewers.remove(p.getUniqueId());
+        pendingSyncs.remove(p.getUniqueId());
+        syncedStablesFor.remove(p.getUniqueId());
+        // If they were spectating, put their own state back (inventory/vitals
+        // are still settable during the quit event — teleport is a no-op then)
+        // and hand the place back to the fake for the remaining viewers.
+        // Paused players are already restored — just drop their auto re-possess
+        // (a relog is a fresh session; they spectate manually again).
+        Integer stable = spectateStable.remove(p.getUniqueId());
+        SpectateSave save = spectateSave.remove(p.getUniqueId());
+        if (stable != null) {
+            restoreSpectate(p, save);
+            maybeRespawnSpectatedFake(stable);
+        }
+        for (Set<UUID> set : pausedSpectate.values()) set.remove(p.getUniqueId());
+        restoreForcedMode(p);
+    }
+
+    private void restoreForcedMode(Player p) {
+        org.bukkit.GameMode prev = forcedModes.remove(p.getUniqueId());
+        if (prev != null && p.isOnline() && p.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
+            p.setGameMode(prev);
+        }
     }
 
     public boolean isViewer(Player p) {
@@ -169,6 +229,397 @@ public final class ReplaySession {
 
     public List<UUID> viewerIds() {
         return new ArrayList<>(viewers);
+    }
+
+    // --- Camera: per-player live follow of a recorded entity -------------
+    private final Map<UUID, Integer> camStable = new HashMap<>();
+    private final Map<UUID, org.bukkit.GameMode> camPrevMode = new HashMap<>();
+
+    /** Start following a recorded entity by name. Returns false if not live. */
+    public boolean startCamera(Player p, String name) {
+        Integer stable = null;
+        for (Map.Entry<Integer, String> e : nameByStable.entrySet()) {
+            if (e.getValue() != null && e.getValue().equalsIgnoreCase(name)) {
+                stable = e.getKey();
+                break;
+            }
+        }
+        if (stable == null) return false;
+        camStable.put(p.getUniqueId(), stable);
+        if (p.getGameMode() != org.bukkit.GameMode.SPECTATOR) {
+            camPrevMode.put(p.getUniqueId(), p.getGameMode());
+            p.setGameMode(org.bukkit.GameMode.SPECTATOR);
+        }
+        return true;
+    }
+
+    /** Stop following and restore the player's previous gamemode if needed. */
+    public boolean stopCamera(Player p) {
+        if (camStable.remove(p.getUniqueId()) == null) return false;
+        org.bukkit.GameMode prev = camPrevMode.remove(p.getUniqueId());
+        if (prev != null && p.isOnline() && p.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
+            p.setGameMode(prev);
+        }
+        return true;
+    }
+
+    public boolean isCameraman(Player p) {
+        return camStable.containsKey(p.getUniqueId());
+    }
+
+    /** Names of currently live recorded entities (for tab completion). */
+    public List<String> liveEntityNames() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (String n : nameByStable.values()) {
+            if (n != null) out.add(n);
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** Teleport each cameraman to the live position of the entity they follow. */
+    public void driveCameras() {
+        if (camStable.isEmpty()) return;
+        for (Map.Entry<UUID, Integer> e : camStable.entrySet()) {
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p == null || !p.isOnline()) {
+                camStable.remove(e.getKey());
+                camPrevMode.remove(e.getKey());
+                continue;
+            }
+            EntityPose pose = entityPoses.get(e.getValue());
+            if (pose == null) continue; // target died — will be re-located on respawn
+            try {
+                org.bukkit.Location loc = new org.bukkit.Location(world,
+                        pose.pos().x(), pose.pos().y() + 1.0, pose.pos().z(),
+                        pose.rot().yaw(), 0f);
+                p.teleport(loc);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** Release every camera and restore gamemodes (called when playback stops). */
+    private void releaseCameras() {
+        for (Map.Entry<UUID, org.bukkit.GameMode> cm : camPrevMode.entrySet()) {
+            Player p = Bukkit.getPlayer(cm.getKey());
+            if (p != null && p.isOnline() && p.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
+                p.setGameMode(cm.getValue());
+            }
+        }
+        camStable.clear();
+        camPrevMode.clear();
+    }
+
+    // --- First-person spectate: become a recorded player ------------------
+    // The target's fake entity is destroyed and the REAL player is driven
+    // instead: every tick they are teleported to the recorded pose, and
+    // recorded vitals / inventory / equipment updates are applied to their
+    // real player state. Their own state is saved and restored on
+    // stopspectate (or when playback ends / the target dies or leaves).
+    private record SpectateSave(org.bukkit.Location loc, float health, int food,
+                                float saturation, org.bukkit.GameMode mode, byte[][] inventory) {}
+    private final Map<UUID, Integer> spectateStable = new HashMap<>();
+    private final Map<UUID, SpectateSave> spectateSave = new HashMap<>();
+    /** Stable id -> real players PAUSED on it: restored + told the target
+     *  left the region; they are re-possessed automatically on the target's
+     *  next PlayerSpawn (re-entry). Only {@code stopspectate} cancels this. */
+    private final Map<Integer, Set<UUID>> pausedSpectate = new HashMap<>();
+    // Live caches so spectating can be started mid-playback with the current
+    // recorded state (cleared on entity reset).
+    private record Vitals(float health, int food, float saturation) {}
+    private final Map<Integer, Vitals> lastVitalsByStable = new HashMap<>();
+    private final Map<Integer, byte[][]> lastInventoryByStable = new HashMap<>();
+    private final Map<Integer, byte[][]> lastEquipmentByStable = new HashMap<>();
+
+    /**
+     * Become the recorded player {@code name}: destroys their fake entity and
+     * drives the real player (pose + vitals + inventory) from the recording.
+     * Returns false when no live recorded player has that name.
+     */
+    public boolean startSpectate(Player p, String name) {
+        Integer stable = null;
+        for (Map.Entry<Integer, String> e : nameByStable.entrySet()) {
+            if (e.getValue() != null && e.getValue().equalsIgnoreCase(name)) {
+                stable = e.getKey();
+                break;
+            }
+        }
+        // Must still be alive (entityPoses is cleared on death/leave).
+        if (stable == null || !entityPoses.containsKey(stable)) return false;
+        if (spectateStable.containsKey(p.getUniqueId())) return true;
+        return possess(p, stable);
+    }
+
+    /** Take over the recorded player's place. Shared by the command and by
+     *  automatic re-possess when a paused target re-enters the region. */
+    private boolean possess(Player p, int stable) {
+        // Manual spectate also cancels any pending auto re-possess.
+        Set<UUID> pausedHere = pausedSpectate.get(stable);
+        if (pausedHere != null) pausedHere.remove(p.getUniqueId());
+        // Cam would fight the spectate driver over the same player's teleports.
+        stopCamera(p);
+        if (!viewers.contains(p.getUniqueId())) viewers.add(p.getUniqueId());
+
+        // Save the player's real state for restoration.
+        org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        spectateSave.put(p.getUniqueId(), new SpectateSave(
+                p.getLocation().clone(), p.getHealth(), p.getFoodLevel(),
+                p.getSaturation(), p.getGameMode(),
+                dev.idebugger.echoreplay.record.EntityTickRecorder.serializeInventory(inv)));
+        spectateStable.put(p.getUniqueId(), stable);
+
+        // Destroy the fake so the real player takes its place.
+        Integer runtime = stableToRuntime.remove(stable);
+        if (runtime != null) destroyFor(runtime);
+
+        // Switch to survival so the held item renders first-person (the
+        // previous mode — often forced spectator — is saved + restored).
+        if (p.getGameMode() != org.bukkit.GameMode.SURVIVAL) {
+            p.setGameMode(org.bukkit.GameMode.SURVIVAL);
+        }
+
+        // Apply the recorded player's current state.
+        EntityPose pose = entityPoses.get(stable);
+        if (pose != null) {
+            try {
+                p.teleport(new org.bukkit.Location(world, pose.pos().x(), pose.pos().y(), pose.pos().z(),
+                        pose.rot().headYaw(), pose.rot().pitch()));
+            } catch (Exception ignored) {}
+        }
+        Vitals vitals = lastVitalsByStable.get(stable);
+        if (vitals != null) {
+            applyVitalsToPlayer(p, vitals.health(), vitals.food(), vitals.saturation());
+        }
+        byte[][] recInv = lastInventoryByStable.get(stable);
+        if (recInv != null) {
+            applyInventoryToPlayer(p, recInv);
+        } else {
+            byte[][] eq = lastEquipmentByStable.get(stable);
+            if (eq != null) applyInventoryToPlayer(p, equipmentAsInventory(eq));
+        }
+        return true;
+    }
+
+    /** Stop spectating: restore the player's saved state and re-spawn the fake. */
+    public boolean stopSpectate(Player p) {
+        Integer stable = spectateStable.remove(p.getUniqueId());
+        if (stable != null) {
+            SpectateSave save = spectateSave.remove(p.getUniqueId());
+            restoreSpectate(p, save);
+            maybeRespawnSpectatedFake(stable);
+            return true;
+        }
+        // Paused (target left the region): stopspectate OVERRIDES the pending
+        // auto re-possess.
+        for (var it = pausedSpectate.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Integer, Set<UUID>> en = it.next();
+            if (en.getValue().remove(p.getUniqueId())) {
+                if (en.getValue().isEmpty()) it.remove();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Tell live spectators their target died — spectate CONTINUES through
+     *  the death (no damage to the real player) and snaps to the respawn. */
+    private void notifySpectatorsOfDeath(int stable) {
+        String name = nameByStable.getOrDefault(stable, "?");
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() != stable) continue;
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p != null && p.isOnline()) {
+                p.sendMessage(Text.mm("<gray>💀 <aqua>" + name + "</aqua> <gray>died — you stay with them. "
+                        + "You'll snap to their respawn."));
+            }
+        }
+    }
+
+    /** Target left the region (or the server): restore every spectator on it
+     *  and park them as paused — they are re-possessed automatically when the
+     *  target's PlayerSpawn arrives again (re-entry). */
+    private void pauseSpectateForStable(int stable) {
+        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
+            if (e.getValue() != stable) continue;
+            spectateStable.remove(e.getKey());
+            SpectateSave save = spectateSave.remove(e.getKey());
+            Player p = Bukkit.getPlayer(e.getKey());
+            restoreSpectate(p, save);
+            pausedSpectate.computeIfAbsent(stable, k -> new HashSet<>()).add(e.getKey());
+            if (p != null && p.isOnline()) {
+                p.sendMessage(Text.mm("<gray>⚠ <aqua>" + nameByStable.getOrDefault(stable, "?")
+                        + "</aqua> <gray>left the region — spectate paused. You'll be re-possessed "
+                        + "when they come back (or <yellow>/er stopspectate</yellow> <gray>to end it)."));
+            }
+        }
+    }
+
+    /** Target re-entered the region: re-possess every paused spectator. */
+    private void repossessPaused(int stable, String spawnName) {
+        Set<UUID> paused = pausedSpectate.remove(stable);
+        if (paused == null || paused.isEmpty()) return;
+        String name = spawnName != null ? spawnName : nameByStable.getOrDefault(stable, "?");
+        for (UUID id : paused) {
+            Player p = Bukkit.getPlayer(id);
+            if (p == null || !p.isOnline() || !viewers.contains(id)) continue;
+            if (possess(p, stable)) {
+                p.sendMessage(Text.mm("<gray>✓ <aqua>" + name + "</aqua> <gray>is back in the region — "
+                        + "spectating again."));
+            }
+        }
+    }
+
+    /** Re-spawn a player's fake after an in-region death+respawn (no new
+     *  PlayerSpawn arrives — poses just resume). Skips the real players who
+     *  currently possess this stable, so they don't see a duplicate self. */
+    private void respawnPlayerAt(int stable, Vec3d pos, Rotation rot) {
+        TimelineEvent.PlayerSpawn spawn = playerSpawnByStable.get(stable);
+        if (spawn == null || stableToRuntime.containsKey(stable)) return;
+        if (fakes.isExhausted()) {
+            warnIdExhausted();
+            return;
+        }
+        int runtime = fakes.allocateId();
+        stableToRuntime.put(stable, runtime);
+        entityPoses.put(stable, new EntityPose(pos, rot));
+        runtimeHeadYaw.put(stable, rot.headYaw());
+        Set<UUID> possessors = new HashSet<>();
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() == stable) possessors.add(e.getKey());
+        }
+        for (Player p : tickViewers) {
+            if (possessors.contains(p.getUniqueId())) continue;
+            fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pos, rot);
+            recordSpawnedFor(runtime, p);
+        }
+        byte[][] eq = lastEquipmentByStable.get(stable);
+        if (eq != null) sendEquipmentBytes(runtime, eq);
+        pushStance(runtime);
+        for (Player p : tickViewers) {
+            fakes.headLook(p, runtime, rot.headYaw());
+        }
+    }
+
+    /** Put a real player back to their saved state (null-safe, online-checked). */
+    private void restoreSpectate(Player p, SpectateSave save) {
+        if (save == null || p == null || !p.isOnline()) return;
+        try {
+            if (save.inventory() != null) applyInventoryToPlayer(p, save.inventory());
+            p.setFoodLevel(save.food());
+            p.setSaturation(save.saturation());
+            if (p.getGameMode() == org.bukkit.GameMode.SURVIVAL) {
+                p.setGameMode(save.mode());
+            }
+            applyVitalsToPlayer(p, save.health(), save.food(), save.saturation());
+            p.teleport(save.loc());
+        } catch (Exception ignored) {}
+    }
+
+    public boolean isSpectating(Player p) {
+        return spectateStable.containsKey(p.getUniqueId());
+    }
+
+    /** Re-spawn the fake of a spectated stable when nobody spectates it anymore. */
+    private void maybeRespawnSpectatedFake(int stable) {
+        for (Integer s : spectateStable.values()) {
+            if (s.intValue() == stable) return; // another real player still spectates it
+        }
+        EntityPose pose = entityPoses.get(stable);
+        TimelineEvent.PlayerSpawn spawn = playerSpawnByStable.get(stable);
+        if (pose == null || spawn == null) return; // target died/left — nothing to re-spawn
+        if (stableToRuntime.containsKey(stable) || fakes.isExhausted()) return;
+        int runtime = fakes.allocateId();
+        stableToRuntime.put(stable, runtime);
+        List<Player> targets = liveViewers();
+        for (Player p : targets) {
+            fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
+            recordSpawnedFor(runtime, p);
+        }
+        byte[][] eq = lastEquipmentByStable.get(stable);
+        if (eq != null) sendEquipmentBytes(runtime, eq);
+        pushStance(runtime);
+    }
+
+    /**
+     * Release every spectate (playback stopping or entity reset). No fake
+     * re-spawn here: the session is ending or rebuilding its entities anyway.
+     */
+    private void releaseSpectates() {
+        for (UUID id : new ArrayList<>(spectateStable.keySet())) {
+            spectateStable.remove(id);
+            SpectateSave save = spectateSave.remove(id);
+            restoreSpectate(Bukkit.getPlayer(id), save);
+        }
+        // Paused spectators were already restored when paused.
+        pausedSpectate.clear();
+    }
+
+    /** Teleport every real player to the live recorded pose of their target. */
+    private void driveSpectators() {
+        if (spectateStable.isEmpty()) return;
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p == null || !p.isOnline()) {
+                spectateStable.remove(e.getKey());
+                spectateSave.remove(e.getKey());
+                continue;
+            }
+            EntityPose pose = entityPoses.get(e.getValue());
+            if (pose == null) continue; // target died / left — stay put;
+                                        // spectate resumes on respawn / re-entry
+            try {
+                // Body follows the motion, view follows the recorded head.
+                p.teleport(new org.bukkit.Location(world,
+                        pose.pos().x(), pose.pos().y(), pose.pos().z(),
+                        pose.rot().headYaw(), pose.rot().pitch()));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /** Cosmetic vitals: never actually hurts (clamped above lethal). */
+    private void applyVitalsToPlayer(Player p, float health, int food, float saturation) {
+        try {
+            float h = Math.max(1.0f, Math.min(health, p.getMaxHealth()));
+            p.setHealth(h);
+            p.setFoodLevel(Math.max(0, Math.min(20, food)));
+            p.setSaturation(Math.max(0f, Math.min(20f, saturation)));
+        } catch (Exception ignored) {}
+    }
+
+    /** Apply a 41-slot recorded inventory to a real player. */
+    private void applyInventoryToPlayer(Player p, byte[][] slots) {
+        if (slots == null) return;
+        try {
+            org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+            org.bukkit.ItemStack[] main = new org.bukkit.ItemStack[36];
+            int n = Math.min(slots.length, 41);
+            for (int i = 0; i < 36 && i < n; i++) {
+                main[i] = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[i]);
+            }
+            inv.setContents(main);
+            if (n > 40) {
+                inv.setArmorContents(new org.bukkit.ItemStack[]{
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[36]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[37]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[38]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[39])});
+                inv.setItemInOffHand(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[40]));
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Map a 6-slot equipment array (main/off/boots/legs/chest/helmet) to the 41-slot layout. */
+    private static byte[][] equipmentAsInventory(byte[][] eq) {
+        byte[][] out = new byte[41][];
+        for (int i = 0; i < 41; i++) out[i] = new byte[0];
+        if (eq == null) return out;
+        if (eq.length > 0 && eq[0] != null) out[0] = eq[0];        // main hand -> hotbar slot 0
+        if (eq.length > 1 && eq[1] != null) out[40] = eq[1];       // offhand
+        if (eq.length > 2 && eq[2] != null) out[36] = eq[2];       // boots
+        if (eq.length > 3 && eq[3] != null) out[37] = eq[3];       // leggings
+        if (eq.length > 4 && eq[4] != null) out[38] = eq[4];       // chestplate
+        if (eq.length > 5 && eq[5] != null) out[39] = eq[5];       // helmet
+        return out;
     }
 
     /** Parsed BlockData for a palette index, parsed once then cached. */
@@ -262,6 +713,11 @@ public final class ReplaySession {
             case RUN -> {
                 if (stopping) return false;
                 tickDeaths();
+                drainViewerSyncs();
+                if (!clock.paused()) {
+                    driveCameras();
+                    driveSpectators();
+                }
                 double media = clock.tick();
                 while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= media) {
                     TimelineEvent ev = timeline.get(appliedIndex);
@@ -277,6 +733,125 @@ public final class ReplaySession {
             }
         }
         return false;
+    }
+
+    /**
+     * Bring late-joining viewers up to the current playback state, targeting
+     * ONLY them (temporarily swapping {@code tickViewers}). Two parts:
+     *  1. Entity snapshot — fresh spawn + equipment + current pose/stance for
+     *     every currently-live entity (reusing the live runtime id, so the
+     *     joiner sees exactly what the other viewers see; no shared state is
+     *     mutated, and spawns that happen mid-sync are picked up on the next
+     *     pass via the per-viewer done-set).
+     *  2. Virtual mode only — stream the past block changes up to the current
+     *     cursor (world mode's terrain is physically correct). No historical
+     *     chat/SFX/particles are replayed to the joiner.
+     * Budgeted across ticks like the other streaming phases.
+     */
+    private void drainViewerSyncs() {
+        if (pendingSyncs.isEmpty()) return;
+        long deadline = System.nanoTime() + phaseBudgetNanos;
+        for (java.util.Iterator<Map.Entry<UUID, Integer>> it = pendingSyncs.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<UUID, Integer> en = it.next();
+            Player p = Bukkit.getPlayer(en.getKey());
+            if (p == null || !p.isOnline()) {
+                it.remove();
+                syncedStablesFor.remove(en.getKey());
+                continue;
+            }
+            List<Player> savedViewers = tickViewers;
+            tickViewers = List.of(p);
+            try {
+                syncEntitiesFor(p);
+                // Virtual mode: stream past block changes to this viewer.
+                if (virtual && en.getValue() < appliedIndex) {
+                    int n = 0;
+                    while (en.getValue() < appliedIndex) {
+                        TimelineEvent ev = timeline.get(en.getValue());
+                        en.setValue(en.getValue() + 1);
+                        if (ev instanceof TimelineEvent.BlockSet bs) {
+                            applyBlockSet(bs);
+                        } else if (ev instanceof TimelineEvent.MultiBlock mb) {
+                            for (TimelineEvent.BlockSet b : mb.blocks()) applyBlockSet(b);
+                        }
+                        if ((++n & 511) == 0 && System.nanoTime() >= deadline) break;
+                    }
+                }
+            } finally {
+                tickViewers = savedViewers;
+            }
+            if (!virtual || en.getValue() >= appliedIndex) {
+                it.remove();
+                syncedStablesFor.remove(p.getUniqueId());
+            }
+        }
+    }
+
+    /** Snapshot-spawn every currently-live entity this viewer has not seen yet. */
+    private void syncEntitiesFor(Player p) {
+        java.util.Set<Integer> done = syncedStablesFor.computeIfAbsent(p.getUniqueId(), k -> new java.util.HashSet<>());
+        for (Map.Entry<Integer, Integer> e : stableToRuntime.entrySet()) {
+            int stable = e.getKey();
+            if (done.contains(stable)) continue;
+            int runtime = e.getValue();
+            EntityPose pose = entityPoses.get(stable);
+            TimelineEvent.PlayerSpawn ps = playerSpawnByStable.get(stable);
+            TimelineEvent.EntitySpawn es = entitySpawnByStable.get(stable);
+            dev.idebugger.echoreplay.model.Vec3d pos = pose != null ? pose.pos() : (ps != null ? ps.pos() : es.pos());
+            dev.idebugger.echoreplay.model.Rotation rot = pose != null ? pose.rot() : (ps != null ? ps.rot() : es.rot());
+            if (ps != null) {
+                fakes.spawnPlayer(p, runtime, ps.uuid(), ps.name(), ps.skin(), pos, rot);
+                replayPlayerEquipment(runtime, ps);
+            } else if (es != null) {
+                com.github.retrooper.packetevents.protocol.entity.type.EntityType type = null;
+                String key = es.typeKey();
+                int slash = key.indexOf(':');
+                try {
+                    type = com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
+                            .getByName(slash >= 0 ? key.substring(slash + 1) : key);
+                } catch (Exception ignored) {
+                }
+                if (type == null) {
+                    done.add(stable); // unknown type — was never spawned anyway
+                    continue;
+                }
+                fakes.spawnMob(p, runtime, es.uuid(), type, pos, rot);
+                applySpawnMetadata(p, runtime, es);
+            } else {
+                done.add(stable); // no spawn record — skip
+                continue;
+            }
+            fakes.positionSync(p, runtime, pos, rot, true);
+            fakes.headLook(p, runtime, rot.headYaw());
+            pushStance(runtime);
+            done.add(stable);
+            recordSpawnedFor(runtime, p);
+        }
+    }
+
+    /** Re-apply an entity's recorded spawn metadata (baby/slime/firework). */
+    private void applySpawnMetadata(Player p, int runtime, TimelineEvent.EntitySpawn s) {
+        java.util.List<dev.idebugger.echoreplay.model.RecordedMetadata.Entry> spawnMeta =
+                dev.idebugger.echoreplay.model.RecordedMetadata.decodeEntries(s.metadata());
+        if (spawnMeta.isEmpty()) return;
+        java.util.List<EntityData<?>> data = new ArrayList<>();
+        for (dev.idebugger.echoreplay.model.RecordedMetadata.Entry entry : spawnMeta) {
+            int idx = entry.index();
+            int kind = entry.type();
+            if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BYTE) {
+                data.add(new EntityData<>(idx, EntityDataTypes.BYTE, (byte) entry.intValue()));
+            } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BOOLEAN) {
+                data.add(new EntityData<>(idx, EntityDataTypes.BOOLEAN, entry.intValue() != 0));
+            } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_ITEMSTACK) {
+                byte[] itemBytes = entry.itemBytes();
+                org.bukkit.inventory.ItemStack bukkitItem = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(itemBytes);
+                var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(bukkitItem);
+                data.add(new EntityData<>(idx, EntityDataTypes.ITEMSTACK, peItem));
+            } else {
+                data.add(new EntityData<>(idx, EntityDataTypes.INT, entry.intValue()));
+            }
+        }
+        fakes.setMetadata(p, runtime, data);
     }
 
     /** Count down pending death animations and destroy the fake entity at the end. */
@@ -320,18 +895,17 @@ public final class ReplaySession {
 
     public void seekTo(double targetMs) {
         if (stopping || phase == Phase.RESTORE || phase == Phase.DONE) return;
+        // Any viewer sync in flight is now stale: re-sync from zero afterwards.
+        pendingSyncs.replaceAll((k, v) -> 0);
         if (virtual) {
-            // No terrain to rebuild: reset entities and fast-apply synchronously
-            // (cheap: no block parsing anymore, palette is pre-parsed).
+            // No terrain to rebuild: reset entities and stream the fast-apply
+            // through CATCHUP (budgeted across ticks — a long recording must
+            // not freeze the tick thread).
             resetEntities();
             appliedIndex = 0;
-            refreshViewers();
-            while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= targetMs) {
-                TimelineEvent ev = timeline.get(appliedIndex);
-                appliedIndex++;
-                applyEvent(ev);
-            }
-            clock.seekTo(targetMs);
+            catchupTargetMs = targetMs;
+            clock.pause();
+            phase = Phase.CATCHUP;
             return;
         }
         boolean wasPaused = clock.paused();
@@ -379,7 +953,7 @@ public final class ReplaySession {
         // it when playback ends, before the recorded snapshot wipes it.
         // Both capture and snapshot stream across ticks (see tick()).
         clock.pause();
-        if (!liveCaptured) {
+        if (liveBackup) {
             beginCapture();
         } else {
             beginSnapshot(-1);
@@ -401,6 +975,17 @@ public final class ReplaySession {
     /** Destroy fakes, notify viewers, then stream the terrain restore. */
     private void beginStopPhase() {
         stopping = true;
+        pendingSyncs.clear();
+        releaseSpectates();
+        releaseCameras();
+        // Restore any viewers we switched to spectator.
+        for (Map.Entry<UUID, org.bukkit.GameMode> fm : forcedModes.entrySet()) {
+            Player p = Bukkit.getPlayer(fm.getKey());
+            if (p != null && p.getGameMode() == org.bukkit.GameMode.SPECTATOR) {
+                p.setGameMode(fm.getValue());
+            }
+        }
+        forcedModes.clear();
         // Notify viewers that playback ended
         for (Player p : liveViewers()) {
             p.sendMessage(Text.mm("<gray>Playback ended.</gray>"));
@@ -440,6 +1025,14 @@ public final class ReplaySession {
         runtimePose.clear();
         runtimeHeadYaw.clear();
         dyingRuntimes.clear();
+        playerSpawnByStable.clear();
+        entitySpawnByStable.clear();
+        lastVitalsByStable.clear();
+        lastInventoryByStable.clear();
+        lastEquipmentByStable.clear();
+        releaseSpectates();
+        pendingSyncs.replaceAll((k, v) -> 0);
+        syncedStablesFor.clear();
     }
 
     /** Apply t=0 entity spawns after a snapshot reset. */
@@ -556,12 +1149,18 @@ public final class ReplaySession {
         double target = catchupTargetMs;
         long deadline = System.nanoTime() + phaseBudgetNanos;
         int n = 0;
+        silentApply = true; // skip sound/chat/particle spam for the seeked span
         while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= target) {
             TimelineEvent ev = timeline.get(appliedIndex);
             appliedIndex++;
             applyEvent(ev);
-            if ((++n & 1023) == 0 && System.nanoTime() >= deadline) return;
+            if ((++n & 1023) == 0 && System.nanoTime() >= deadline) {
+                catchupTargetMs = target; // resume where we left off next tick
+                silentApply = false;
+                return;
+            }
         }
+        silentApply = false;
         catchupTargetMs = -1;
         clock.seekTo(target);
         phase = Phase.RUN;
@@ -669,11 +1268,49 @@ public final class ReplaySession {
             case TimelineEvent.Particle p -> onParticle(p);
             case TimelineEvent.Explosion e -> onExplosion(e);
             case TimelineEvent.EntityStatus s -> onEntityStatus(s);
+            case TimelineEvent.WorldTime w -> onWorldTime(w);
+            case TimelineEvent.PlayerVitals v -> onPlayerVitals(v);
+            case TimelineEvent.PlayerInventory v -> onPlayerInventory(v);
             default -> {}
         }
     }
 
+    /** Record vitals; apply to a real player who is spectating this npc. */
+    private void onPlayerVitals(TimelineEvent.PlayerVitals v) {
+        lastVitalsByStable.put(v.npcId(), new Vitals(v.health(), v.foodLevel(), v.saturation()));
+        Player sp = spectatorOf(v.npcId());
+        if (sp != null) applyVitalsToPlayer(sp, v.health(), v.foodLevel(), v.saturation());
+    }
+
+    /** Record the full inventory; apply to a real player who is spectating this npc. */
+    private void onPlayerInventory(TimelineEvent.PlayerInventory v) {
+        lastInventoryByStable.put(v.npcId(), v.slots());
+        Player sp = spectatorOf(v.npcId());
+        if (sp != null) applyInventoryToPlayer(sp, v.slots());
+    }
+
+    /** The first online real player spectating this stable, or null. */
+    private Player spectatorOf(int stableId) {
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() == stableId) {
+                Player p = Bukkit.getPlayer(e.getKey());
+                if (p != null && p.isOnline()) return p;
+            }
+        }
+        return null;
+    }
+
+    /** Drive the real world's time-of-day from the recording (world mode only). */
+    private void onWorldTime(TimelineEvent.WorldTime w) {
+        if (!driveWorldTime || virtual) return;
+        try {
+            world.setTime(w.time());
+        } catch (Exception ignored) {
+        }
+    }
+
     private void onBlockBreakAnim(TimelineEvent.BlockBreakAnim b) {
+        if (silentApply) return;
         Integer runtime = stableToRuntime.get(b.breakerNpcId());
         if (runtime == null) runtime = 0;
         int wx = cuboid.min().x() + b.pos().x();
@@ -689,7 +1326,6 @@ public final class ReplaySession {
     }
 
     private void applyBlockSet(TimelineEvent.BlockSet b) {
-        if (virtual) return; // virtual-write path is a TODO note: viewer-only overlay
         int wx = cuboid.min().x() + b.pos().x();
         int wy = cuboid.min().y() + b.pos().y();
         int wz = cuboid.min().z() + b.pos().z();
@@ -697,17 +1333,32 @@ public final class ReplaySession {
         // re-parses text on every call and was a major per-block cost.
         BlockData data = blockDataFor(b.paletteIndex());
         if (data == null) return;
-        // Physics OFF: neighbor updates (BlockPhysicsEvent storms, flowing
-        // liquids, falling sand cascades) are pure waste here — every
-        // resulting state is already in the recorded stream and the
-        // manager cancels physics inside the cuboid anyway.
-        try {
-            world.getBlockAt(wx, wy, wz).setBlockData(data, false);
-        } catch (Exception ignored) {
-            return;
+        if (!virtual) {
+            // Physics OFF: neighbor updates (BlockPhysicsEvent storms, flowing
+            // liquids, falling sand cascades) are pure waste here — every
+            // resulting state is already in the recorded stream and the
+            // manager cancels physics inside the cuboid anyway.
+            try {
+                world.getBlockAt(wx, wy, wz).setBlockData(data, false);
+            } catch (Exception ignored) {
+                return;
+            }
+            // Re-apply block-entity NBT (sign text, container contents,
+            // respawn anchor charges, etc.) so these blocks update rather
+            // than just place.
+            if (b.nbt() != null && b.nbt().length > 0) {
+                try {
+                    var tile = world.getBlockAt(wx, wy, wz).getState(true);
+                    dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, b.nbt());
+                    tile.update(true);
+                } catch (Exception ignored) {
+                }
+            }
         }
-        // Also push the change straight to all viewers so the break/update is
-        // guaranteed visible even if the viewer's client didn't get a chunk sync.
+        // Push the change straight to all viewers (the ONLY path in virtual
+        // mode, where no world write happens) so the break/update is
+        // guaranteed visible even if the viewer's client didn't get a chunk
+        // sync.
         Object packetState = packetStateFor(b.paletteIndex());
         if (packetState instanceof com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState wrapped) {
             var change = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange(
@@ -717,40 +1368,49 @@ public final class ReplaySession {
                 com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().sendPacket(p, change);
             }
         }
-        // Re-apply block-entity NBT (sign text, container contents, respawn
-        // anchor charges, etc.) so these blocks update rather than just place.
-        if (b.nbt() != null && b.nbt().length > 0) {
-            try {
-                var tile = world.getBlockAt(wx, wy, wz).getState(true);
-                dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, b.nbt());
-                tile.update(true);
-            } catch (Exception ignored) {
-            }
-        }
     }
 
-    /** Replay a player respawn (including KeepInventory armor and equipment). */
+    /** Replay a player spawn/respawn (including KeepInventory armor and equipment). */
     private void onPlayerSpawn(TimelineEvent.PlayerSpawn s) {
-        if (stableToRuntime.containsKey(s.npcId())) {
-            int existing = stableToRuntime.get(s.npcId());
+        playerSpawnByStable.put(s.npcId(), s);
+        byte[][] eq = s.equipment() != null
+                ? s.equipment().toArray(new byte[0][]) : null;
+        lastEquipmentByStable.put(s.npcId(), eq != null ? eq : new byte[6][]);
+        Integer existing = stableToRuntime.get(s.npcId());
+        if (existing != null) {
             entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
             for (Player p : tickViewers) {
                 fakes.positionSync(p, existing, s.pos(), s.rot(), true);
             }
             // Also replay equipment for respawned player
             replayPlayerEquipment(existing, s);
+            repossessPaused(s.npcId(), s.name());
+            return;
+        }
+        if (fakes.isExhausted()) {
+            warnIdExhausted();
             return;
         }
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
         nameByStable.put(s.npcId(), s.name() != null ? s.name() : "?");
-        // Replay equipment for new spawn
-        replayPlayerEquipment(runtime, s);
+        // Spawn FIRST, then equipment: the client drops equipment packets for
+        // entity ids it does not know yet.
         for (Player p : tickViewers) {
             fakes.spawnPlayer(p, runtime, s.uuid(), s.name(), s.skin(), s.pos(), s.rot());
             recordSpawnedFor(runtime, p);
         }
+        replayPlayerEquipment(runtime, s);
+        // Re-entry into the region: hand the place back to paused spectators.
+        repossessPaused(s.npcId(), s.name());
+    }
+
+    private void warnIdExhausted() {
+        if (entityIdExhaustedLogged) return;
+        entityIdExhaustedLogged = true;
+        EchoReplay.getPlugin(EchoReplay.class).getLogger()
+                .warning("Fake-entity id band exhausted — new entities will be invisible for the rest of this replay.");
     }
 
     /** Replay player equipment slots (0-5) with KeepInventory support. */
@@ -785,6 +1445,7 @@ public final class ReplaySession {
     }
 
     private void onEntitySpawn(TimelineEvent.EntitySpawn s) {
+        entitySpawnByStable.put(s.npcId(), s);
         String key = s.typeKey();
         int slash = key.indexOf(':');
         String plain = slash >= 0 ? key.substring(slash + 1) : key;
@@ -805,33 +1466,16 @@ public final class ReplaySession {
             }
             return;
         }
+        if (fakes.isExhausted()) {
+            warnIdExhausted();
+            return;
+        }
         int runtime = fakes.allocateId();
         stableToRuntime.put(s.npcId(), runtime);
         entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
-        java.util.List<dev.idebugger.echoreplay.model.RecordedMetadata.Entry> spawnMeta =
-                dev.idebugger.echoreplay.model.RecordedMetadata.decodeEntries(s.metadata());
         for (Player p : tickViewers) {
             fakes.spawnMob(p, runtime, s.uuid(), type, s.pos(), s.rot());
-            if (!spawnMeta.isEmpty()) {
-                java.util.List<EntityData<?>> data = new ArrayList<>();
-                for (dev.idebugger.echoreplay.model.RecordedMetadata.Entry entry : spawnMeta) {
-                    int idx = entry.index();
-                    int kind = entry.type();
-                    if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BYTE) {
-                        data.add(new EntityData<>(idx, EntityDataTypes.BYTE, (byte) entry.intValue()));
-                    } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_BOOLEAN) {
-                        data.add(new EntityData<>(idx, EntityDataTypes.BOOLEAN, entry.intValue() != 0));
-                    } else if (kind == dev.idebugger.echoreplay.model.RecordedMetadata.TYPE_ITEMSTACK) {
-                        byte[] itemBytes = entry.itemBytes();
-                        org.bukkit.inventory.ItemStack bukkitItem = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(itemBytes);
-                        var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(bukkitItem);
-                        data.add(new EntityData<>(idx, EntityDataTypes.ITEMSTACK, peItem));
-                    } else {
-                        data.add(new EntityData<>(idx, EntityDataTypes.INT, entry.intValue()));
-                    }
-                }
-                fakes.setMetadata(p, runtime, data);
-            }
+            applySpawnMetadata(p, runtime, s);
             recordSpawnedFor(runtime, p);
         }
     }
@@ -847,9 +1491,19 @@ public final class ReplaySession {
     }
 
     private void onMove(TimelineEvent.Move m) {
-        Integer runtime = stableToRuntime.get(m.npcId());
-        if (runtime == null) return;
+        // Pose is recorded even when no fake exists (spectate destroyed it,
+        // or the id band was exhausted): first-person drivers read it.
         entityPoses.put(m.npcId(), new EntityPose(m.pos(), m.rot()));
+        Integer runtime = stableToRuntime.get(m.npcId());
+        if (runtime == null) {
+            // A player can respawn in-region after death WITHOUT a new
+            // PlayerSpawn — poses simply resume. Re-spawn the fake so the
+            // scene (and any first-person spectator) stays continuous.
+            if (playerSpawnByStable.containsKey(m.npcId())) {
+                respawnPlayerAt(m.npcId(), m.pos(), m.rot());
+            }
+            return;
+        }
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, m.pos(), m.rot(), m.onGround());
         }
@@ -857,9 +1511,14 @@ public final class ReplaySession {
     }
 
     private void onTeleport(TimelineEvent.Teleport t) {
-        Integer runtime = stableToRuntime.get(t.npcId());
-        if (runtime == null) return;
         entityPoses.put(t.npcId(), new EntityPose(t.pos(), t.rot()));
+        Integer runtime = stableToRuntime.get(t.npcId());
+        if (runtime == null) {
+            if (playerSpawnByStable.containsKey(t.npcId())) {
+                respawnPlayerAt(t.npcId(), t.pos(), t.rot());
+            }
+            return;
+        }
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, t.pos(), t.rot(), true);
         }
@@ -888,6 +1547,7 @@ public final class ReplaySession {
     }
 
     private void onChat(TimelineEvent.Chat c) {
+        if (silentApply) return; // no historical chat burst on seek
         String name = nameByStable.getOrDefault(c.npcId(), null);
         net.kyori.adventure.text.Component msg;
         try {
@@ -924,6 +1584,22 @@ public final class ReplaySession {
     }
 
     private void onEquipment(TimelineEvent.Equipment eq) {
+        // Cache the live 6-slot equipment so spectating can start mid-play
+        // with the correct gear and fake re-spawns stay accurate.
+        byte[][] cached = lastEquipmentByStable.get(eq.npcId());
+        if (cached == null) {
+            cached = new byte[6][];
+            for (int i = 0; i < 6; i++) cached[i] = new byte[0];
+            lastEquipmentByStable.put(eq.npcId(), cached);
+        }
+        if (eq.slot() >= 0 && eq.slot() < 6) cached[eq.slot()] = eq.item();
+
+        // First-person spectate: the gear change lands in the real hotbar.
+        Player sp = spectatorOf(eq.npcId());
+        if (sp != null) {
+            applyEquipmentSlotToPlayer(sp, eq.slot(), eq.item());
+        }
+
         Integer runtime = stableToRuntime.get(eq.npcId());
         if (runtime == null) return;
         var item = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(eq.item());
@@ -946,6 +1622,52 @@ public final class ReplaySession {
         }
     }
 
+    /** Apply one recorded equipment slot (0-5) to a real player's inventory. */
+    private void applyEquipmentSlotToPlayer(Player p, int slot, byte[] item) {
+        try {
+            var stack = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(item);
+            org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+            switch (slot) {
+                case 0 -> inv.setItemInMainHand(stack);
+                case 1 -> inv.setItemInOffHand(stack);
+                default -> {
+                    org.bukkit.ItemStack[] armor = inv.getArmorContents();
+                    org.bukkit.ItemStack[] a = armor != null ? armor.clone() : new org.bukkit.ItemStack[4];
+                    int ai = slot - 2; // 2=boots 3=legs 4=chest 5=helmet
+                    if (ai >= 0 && ai < 4) {
+                        a[ai] = stack;
+                        inv.setArmorContents(a);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Send all six cached equipment slots of a (re-)spawned fake to viewers. */
+    private void sendEquipmentBytes(int runtime, byte[][] eq) {
+        for (int i = 0; i < eq.length && i < 6; i++) {
+            if (eq[i] == null || eq[i].length == 0) continue;
+            var item = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(eq[i]);
+            if (item.isEmpty()) continue;
+            var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(item);
+            com.github.retrooper.packetevents.protocol.player.EquipmentSlot peSlot = switch (i) {
+                case 0 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND;
+                case 1 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND;
+                case 2 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS;
+                case 3 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS;
+                case 4 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE;
+                default -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET;
+            };
+            var eqPacket = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment(
+                    runtime, java.util.List.of(
+                            new com.github.retrooper.packetevents.protocol.player.Equipment(peSlot, peItem)));
+            for (Player p : tickViewers) {
+                com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                        .sendPacket(p, eqPacket);
+            }
+        }
+    }
+
     private void onPose(TimelineEvent.Pose p) {
         Integer runtime = stableToRuntime.get(p.npcId());
         if (runtime == null) return;
@@ -962,6 +1684,7 @@ public final class ReplaySession {
 
     /** Replay a recorded damage hit: fire the client hurt red-flash animation. */
     private void onDamage(TimelineEvent.Damage d) {
+        if (silentApply) return;
         Integer runtime = stableToRuntime.get(d.npcId());
         if (runtime == null) return;
         // yaw 0 = straight-on hurt flash.
@@ -989,8 +1712,8 @@ public final class ReplaySession {
     }
 
     private void onSound(TimelineEvent.Sound s) {
-        // Respect speed-sipping: skip ambience when fast-forwarding
-        if (clock.speed() > skipSfxAbove) return;
+        // Skip during seek catch-up (no SFX burst) and when fast-forwarding.
+        if (silentApply || clock.speed() > skipSfxAbove) return;
         org.bukkit.Location loc = new org.bukkit.Location(world, s.pos().x(), s.pos().y(), s.pos().z());
         String key = s.key();
         if (key.startsWith("minecraft:")) key = key.substring("minecraft:".length());
@@ -1008,7 +1731,7 @@ public final class ReplaySession {
     }
 
     private void onParticle(TimelineEvent.Particle p) {
-        if (clock.speed() > skipSfxAbove) return;
+        if (silentApply || clock.speed() > skipSfxAbove) return;
         String raw = p.particleKey();
         String key = raw.contains(":") ? raw.substring(raw.indexOf(":") + 1) : raw;
         org.bukkit.Particle bukkitPart;
@@ -1026,10 +1749,13 @@ public final class ReplaySession {
     }
 
     private void onExplosion(TimelineEvent.Explosion e) {
+        if (silentApply) return;
         org.bukkit.Location loc = new org.bukkit.Location(world, e.pos().x(), e.pos().y(), e.pos().z());
         for (Player p : tickViewers) {
             try {
-                p.spawnParticle(org.bukkit.Particle.EXPLOSION, loc, 1);
+                // EXPLOSION_EMITTER is the renamed (1.20.2+) big burst; the old
+                // EXPLOSION name is now the small fireball trail.
+                p.spawnParticle(org.bukkit.Particle.EXPLOSION_EMITTER, loc, 1);
                 p.playSound(loc, "entity.generic.explode", org.bukkit.SoundCategory.BLOCKS, 1f, 1f);
             } catch (Exception ignored) {}
         }
@@ -1073,16 +1799,28 @@ public final class ReplaySession {
         Integer runtime = stableToRuntime.remove(stableId);
         entityPoses.remove(stableId);
         runtimeHeadYaw.remove(stableId);
+        playerSpawnByStable.remove(stableId);
+        entitySpawnByStable.remove(stableId);
+        lastVitalsByStable.remove(stableId);
+        lastInventoryByStable.remove(stableId);
+        lastEquipmentByStable.remove(stableId);
+        // Leaving the region PAUSES spectate (restore + notice, auto
+        // re-possess on re-entry) instead of ending it.
+        pauseSpectateForStable(stableId);
         if (runtime == null) return;
         destroyFor(runtime);
     }
 
-    /** Replay a recorded death: play the death animation, then destroy lazily. */
+    /** Replay a recorded death: play the death animation, then destroy lazily.
+     *  Death does NOT end spectate — the real player stays (harmless, no
+     *  damage) and snaps to the target's respawn; the spawn + state caches
+     *  are kept so onMove can re-spawn the fake when poses resume. */
     private void onDeath(int stableId) {
         Integer runtime = stableToRuntime.remove(stableId);
         entityPoses.remove(stableId);
         runtimeHeadYaw.remove(stableId);
-        nameByStable.remove(stableId);
+        entitySpawnByStable.remove(stableId);
+        notifySpectatorsOfDeath(stableId);
         if (runtime == null) return;
         for (Player p : tickViewers) {
             fakes.entityStatus(p, runtime, 3); // death status
@@ -1096,6 +1834,8 @@ public final class ReplaySession {
 
     /** Send a destroy packet to exactly the players this fake entity was spawned for. */
     private void destroyFor(int runtimeId) {
+        runtimeFlags.remove(runtimeId);
+        runtimePose.remove(runtimeId);
         Set<UUID> ids = spawnedFor.remove(runtimeId);
         if (ids == null) return;
         for (UUID id : ids) {
@@ -1121,78 +1861,6 @@ public final class ReplaySession {
                 int wy = cuboid.min().y() + relY;
                 int wz = cuboid.min().z() + relZ;
                 var tile = world.getBlockAt(wx, wy, wz).getState(true);
-                dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
-                tile.update(true);
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
-    /**
-     * Capture the region's current (pre-playback) block state into local palette /
-     * data arrays plus tile-entity NBT, so stopplay can undo world-mode changes.
-     */
-    private void captureLiveTerrain() {
-        int sx = cuboid.xSize(), sy = cuboid.ySize(), sz = cuboid.zSize();
-        java.util.Map<String, Integer> palIdx = new java.util.LinkedHashMap<>();
-        java.util.List<String> pal = new ArrayList<>();
-        palIdx.put("minecraft:air", 0);
-        pal.add("minecraft:air");
-        int[] data = new int[sx * sy * sz];
-        int idx = 0;
-        for (int dy = 0; dy < sy; dy++) {
-            for (int dz = 0; dz < sz; dz++) {
-                for (int dx = 0; dx < sx; dx++) {
-                    org.bukkit.block.Block b = world.getBlockAt(
-                            cuboid.min().x() + dx, cuboid.min().y() + dy, cuboid.min().z() + dz);
-                    String state = b.getBlockData() == null
-                            ? "minecraft:air" : b.getBlockData().getAsString(true);
-                    Integer pi = palIdx.get(state);
-                    if (pi == null) {
-                        pi = pal.size();
-                        palIdx.put(state, pi);
-                        pal.add(state);
-                    }
-                    data[idx++] = pi;
-                    org.bukkit.block.BlockState bs = b.getState();
-                    if (bs != null && dev.idebugger.echoreplay.record.Snapshotter.needsNbt(bs.getType())) {
-                        byte[] nb = dev.idebugger.echoreplay.util.NbtBytes.serializeBlockState(bs);
-                        if (nb != null && nb.length > 0) {
-                            liveNbt.put(dx + "," + dy + "," + dz, nb);
-                        }
-                    }
-                }
-            }
-        }
-        livePalette = pal;
-        liveData = data;
-    }
-
-    /** Re-apply the pre-playback terrain captured when playback started. */
-    private void restoreLiveTerrain() {
-        if (liveData.length == 0) return;
-        int idx = 0;
-        for (int dy = 0; dy < cuboid.ySize(); dy++) {
-            for (int dz = 0; dz < cuboid.zSize(); dz++) {
-                for (int dx = 0; dx < cuboid.xSize(); dx++) {
-                    int pi = liveData[idx++];
-                    try {
-                        world.getBlockAt(cuboid.min().x() + dx, cuboid.min().y() + dy,
-                                        cuboid.min().z() + dz)
-                                .setBlockData(Bukkit.createBlockData(livePalette.get(pi)), false);
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        }
-        for (Map.Entry<String, byte[]> e : liveNbt.entrySet()) {
-            String[] parts = e.getKey().split(",");
-            try {
-                int relX = Integer.parseInt(parts[0]);
-                int relY = Integer.parseInt(parts[1]);
-                int relZ = Integer.parseInt(parts[2]);
-                var tile = world.getBlockAt(cuboid.min().x() + relX, cuboid.min().y() + relY,
-                                cuboid.min().z() + relZ).getState(true);
                 dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
                 tile.update(true);
             } catch (Exception ignored) {

@@ -3,18 +3,29 @@ package dev.idebugger.echoreplay.record;
 import dev.idebugger.echoreplay.model.BlockPos;
 import dev.idebugger.echoreplay.model.TimelineEvent;
 import dev.idebugger.echoreplay.select.Cuboid;
+import dev.idebugger.echoreplay.storage.GzipRecordingWriter;
 import dev.idebugger.echoreplay.util.PalettedStorage;
 import org.bukkit.World;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Represents one live recording. Freezes a cuboid, maintains an EventSink, and
  * tracks entity UUID -> stable npcId mapping for the duration of the take.
+ *
+ * <p>Crash safety: once the snapshot is complete the recording streams event
+ * batches into a raw (non-gzip) checkpoint file
+ * ({@code name.echoreplay.gz.partial}). If the server dies mid-recording the
+ * plugin recovers that file on next start, losing at most one flush window.
  */
 public final class RecordingSession {
 
@@ -48,7 +59,17 @@ public final class RecordingSession {
     private volatile State state = State.SNAPSHOTTING;
     private final AtomicInteger sectionsDone = new AtomicInteger(0);
     private int totalSections;
-    private int blocksPerTick = 8000;
+
+    // ---- crash-safety checkpoint (raw, non-gzip section stream) ----
+    private final Object checkpointLock = new Object();
+    private File checkpointFile;
+    private GzipRecordingWriter checkpointWriter;
+    // Events already written to the checkpoint; re-merged into the final file
+    // on stop so the full timeline is contiguous.
+    private final List<TimelineEvent> committedEvents = new ArrayList<>();
+
+    // World time of the previous recording tick (for change detection).
+    private long lastWorldTime = -1;
 
     public enum State { SNAPSHOTTING, RECORDING, FINALIZING, CANCELLED }
 
@@ -75,8 +96,6 @@ public final class RecordingSession {
     public int sectionsDone() { return sectionsDone.get(); }
 
     public void setTotalSections(int t) { this.totalSections = t; }
-    public void setBlocksPerTick(int b) { this.blocksPerTick = b; }
-    public int blocksPerTick() { return blocksPerTick; }
 
     public void setRecording() { this.state = State.RECORDING; }
     public void setFinalizing() { this.state = State.FINALIZING; }
@@ -145,8 +164,8 @@ public final class RecordingSession {
         return paletteList.get(index);
     }
 
-    public java.util.List<String> snapshotPalette() {
-        return java.util.Collections.unmodifiableList(new java.util.ArrayList<>(paletteList));
+    public synchronized List<String> snapshotPalette() {
+        return List.copyOf(paletteList);
     }
 
     /** Emit an event with current media time. */
@@ -165,5 +184,77 @@ public final class RecordingSession {
 
     public void advanceClock(long deltaMs) {
         mediaClock.addAndGet(deltaMs);
+    }
+
+    /** Emit a WorldTime event when the world's time-of-day changed since the last tick. */
+    public void emitWorldTimeIfChanged() {
+        long t = world().getFullTime();
+        if (lastWorldTime < 0) {
+            lastWorldTime = t;
+            return;
+        }
+        if (t != lastWorldTime) {
+            lastWorldTime = t;
+            emit(new TimelineEvent.WorldTime(mediaMillis(), t, !world().isFixedTime()));
+        }
+    }
+
+    // ---- checkpoint accessors (called from the IO thread) ----
+
+    public File checkpointFile() {
+        return checkpointFile;
+    }
+
+    public void setCheckpointFile(File f) {
+        this.checkpointFile = f;
+    }
+
+    public Object checkpointLock() {
+        return checkpointLock;
+    }
+
+    public void openCheckpointWriter(File f) {
+        synchronized (checkpointLock) {
+            if (checkpointWriter != null) return;
+            try (FileOutputStream fos = new FileOutputStream(f)) {
+                checkpointWriter = new GzipRecordingWriter(fos, false);
+            } catch (Exception e) {
+                checkpointWriter = null;
+                return;
+            }
+            // NOTE: the stream is intentionally left OPEN across flushes (one
+            // continuous section stream); closeCheckpointWriter finishes it.
+        }
+    }
+
+    /** @return the open checkpoint writer, or null when not (yet) open. */
+    public GzipRecordingWriter checkpointWriter() {
+        synchronized (checkpointLock) {
+            return checkpointWriter;
+        }
+    }
+
+    public void closeCheckpointWriter() {
+        synchronized (checkpointLock) {
+            if (checkpointWriter == null) return;
+            try {
+                checkpointWriter.close();
+            } catch (Exception ignored) {
+                // A failed close just leaves a shorter-but-still-parseable file.
+            }
+            checkpointWriter = null;
+        }
+    }
+
+    /** Append a checkpointed batch (IO thread). */
+    public synchronized void addCommitted(List<TimelineEvent> batch) {
+        committedEvents.addAll(batch);
+    }
+
+    /** Take all checkpointed events for the final file (IO thread). */
+    public synchronized List<TimelineEvent> takeCommitted() {
+        List<TimelineEvent> out = new ArrayList<>(committedEvents);
+        committedEvents.clear();
+        return out;
     }
 }

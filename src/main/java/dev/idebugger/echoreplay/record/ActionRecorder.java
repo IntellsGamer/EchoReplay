@@ -61,9 +61,9 @@ public final class ActionRecorder implements Listener {
         if (right) {
             int hand = e.getHand() == EquipmentSlot.OFF_HAND ? 1 : 0;
             s.emit(new TimelineEvent.ItemUse(s.mediaMillis(), npc, hand, true));
-        } else if (e.getAction() == Action.LEFT_CLICK_AIR) {
-            s.emit(new TimelineEvent.Animation(s.mediaMillis(), npc, 0));
         }
+        // Left-click arm swings arrive via PlayerAnimationEvent (onAnimation);
+        // emitting them here too produced double swings in the replay.
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
