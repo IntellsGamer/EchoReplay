@@ -59,4 +59,6 @@ public final class RecordingFormat {
     public static final int EV_ENTITY_STATUS = 29;
     public static final int EV_PLAYER_VITALS = 30;
     public static final int EV_PLAYER_INVENTORY = 31;
+    public static final int EV_PLAYER_GAMEMODE = 32;
+    public static final int EV_PLAYER_HELD_SLOT = 33;
 }

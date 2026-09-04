@@ -245,11 +245,14 @@ public final class EntityTickRecorder {
     private record Vitals(float health, int food, float saturation) {}
     private final Map<UUID, Vitals> lastVitals = new HashMap<>();
     private final Map<UUID, byte[][]> lastInventoryBytes = new HashMap<>();
+    private final Map<UUID, Integer> lastGameMode = new HashMap<>();
+    private final Map<UUID, Integer> lastHeldSlot = new HashMap<>();
 
     /**
-     * Records a tracked player's vitals (on change) and full inventory (on
-     * change, or once as a baseline at first observation) so playback can
-     * spectate them in first person with the same health/hunger/items.
+     * Records a tracked player's vitals, gamemode, held hotbar slot (on
+     * change) and full inventory (on change, or once as a baseline at first
+     * observation) so playback can spectate them in first person with the
+     * same health/hunger/items/mode/held-item.
      */
     private void capturePlayerState(RecordingSession s, Player p, UUID uuid, boolean baseline) {
         float health = (float) p.getHealth();
@@ -260,7 +263,28 @@ public final class EntityTickRecorder {
             lastVitals.put(uuid, new Vitals(health, food, sat));
             s.emit(new TimelineEvent.PlayerVitals(s.mediaMillis(), s.npcIdFor(uuid), health, food, sat));
         }
+        int mode;
+        try {
+            mode = p.getGameMode().getValue();
+        } catch (Exception ignored) {
+            mode = 0;
+        }
+        Integer prevMode = lastGameMode.get(uuid);
+        if (prevMode == null || prevMode != mode) {
+            lastGameMode.put(uuid, mode);
+            s.emit(new TimelineEvent.GameMode(s.mediaMillis(), s.npcIdFor(uuid), mode));
+        }
         org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        int held = 0;
+        try {
+            held = inv.getHeldItemSlot();
+        } catch (Exception ignored) {
+        }
+        Integer prevHeld = lastHeldSlot.get(uuid);
+        if (prevHeld == null || prevHeld != held) {
+            lastHeldSlot.put(uuid, held);
+            s.emit(new TimelineEvent.HeldSlot(s.mediaMillis(), s.npcIdFor(uuid), held));
+        }
         byte[][] current = serializeInventory(inv);
         if (baseline || inventoryChanged(uuid, current)) {
             s.emit(new TimelineEvent.PlayerInventory(s.mediaMillis(), s.npcIdFor(uuid),
@@ -306,6 +330,8 @@ public final class EntityTickRecorder {
     public void forgetVitals(UUID uuid) {
         lastVitals.remove(uuid);
         lastInventoryBytes.remove(uuid);
+        lastGameMode.remove(uuid);
+        lastHeldSlot.remove(uuid);
     }
 
     /** Clear per-entity state when a recording starts. */
@@ -317,6 +343,8 @@ public final class EntityTickRecorder {
         lastPlayerSeen.clear();
         lastVitals.clear();
         lastInventoryBytes.clear();
+        lastGameMode.clear();
+        lastHeldSlot.clear();
         inRegion.clear();
     }
 }

@@ -131,7 +131,11 @@ public final class MovementRecorder extends PacketListenerAbstract {
                 double motion = Math.toDegrees(Math.atan2(-dx, dz));
                 bodyYaw = smoothYaw(prev.bodyYaw(), (float) motion, BODY_SMOOTH);
             } else {
-                bodyYaw = prev.bodyYaw();
+                // Stationary (look-around): the body faces the look direction,
+                // like vanilla standing turns and like 1.0.14 recorded it.
+                // Keeping the stale body yaw here freezes the torso while the
+                // head spins 180, which replays as a detached head.
+                bodyYaw = yaw;
             }
         }
 

@@ -125,13 +125,16 @@ sorted by `tickMillis` before playback).
 | 29 | ENTITY_STATUS | `i32 npcId, u8 status` |
 | 30 | PLAYER_VITALS | `i32 npcId, f32 health, i8 foodLevel, f32 saturation` |
 | 31 | PLAYER_INVENTORY | `i32 npcId, u16 slotCount (41)`, `slotCount × {i32 len, u8 bytes[len]}` (ItemStack NBT; empty = air) |
+| 32 | GAME_MODE | `i32 npcId, u8 mode` (Bukkit GameMode value: 0 survival, 1 creative, 2 adventure, 3 spectator) |
+| 33 | HELD_SLOT | `i32 npcId, u8 slot` (selected hotbar slot 0-8) |
 
 `PLAYER_INVENTORY` slot layout: `[0..35]` main inventory (`getContents`
 order, hotbar first), `[36]` boots, `[37]` leggings, `[38]` chestplate,
-`[39]` helmet, `[40]` offhand. `PLAYER_VITALS` and `PLAYER_INVENTORY` are
+`[39]` helmet, `[40]` offhand. `PLAYER_VITALS`, `PLAYER_INVENTORY`, `GAME_MODE` and `HELD_SLOT` are
 only replayed onto a real player while they are first-person spectating that
 recorded player (`/er spectate`); fakes ignore them. Recordings created with
-older plugin versions simply do not contain these events.
+older plugin versions simply do not contain these events (readers skip unknown
+type ids, so new recordings still load on old builds minus the new data).
 
 `npcId` values are session-local opaque integers assigned in first-seen order.
 

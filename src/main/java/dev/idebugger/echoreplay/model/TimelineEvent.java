@@ -17,7 +17,7 @@ public sealed interface TimelineEvent
         TimelineEvent.Chat, TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
         TimelineEvent.ItemUse, TimelineEvent.Teleport, TimelineEvent.Effect, TimelineEvent.CustomName,
         TimelineEvent.Marker, TimelineEvent.EntityStatus, TimelineEvent.PlayerVitals,
-        TimelineEvent.PlayerInventory {
+        TimelineEvent.PlayerInventory, TimelineEvent.GameMode, TimelineEvent.HeldSlot {
 
     long tickMillis();
 
@@ -63,4 +63,8 @@ public sealed interface TimelineEvent
      * Each entry is an ItemStack NBT blob (empty = air).
      */
     record PlayerInventory(long tickMillis, int npcId, byte[][] slots) implements TimelineEvent {}
+    /** Recorded player gamemode (Bukkit GameMode value: 0 survival, 1 creative, 2 adventure, 3 spectator). */
+    record GameMode(long tickMillis, int npcId, int mode) implements TimelineEvent {}
+    /** Recorded player selected hotbar slot (0-8). */
+    record HeldSlot(long tickMillis, int npcId, int slot) implements TimelineEvent {}
 }

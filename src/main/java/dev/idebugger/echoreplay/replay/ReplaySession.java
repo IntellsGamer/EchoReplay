@@ -321,7 +321,8 @@ public final class ReplaySession {
     // real player state. Their own state is saved and restored on
     // stopspectate (or when playback ends / the target dies or leaves).
     private record SpectateSave(org.bukkit.Location loc, float health, int food,
-                                float saturation, org.bukkit.GameMode mode, byte[][] inventory) {}
+                                 float saturation, org.bukkit.GameMode mode, int heldSlot,
+                                 byte[][] inventory) {}
     private final Map<UUID, Integer> spectateStable = new HashMap<>();
     private final Map<UUID, SpectateSave> spectateSave = new HashMap<>();
     /** Stable id -> real players PAUSED on it: restored + told the target
@@ -334,6 +335,8 @@ public final class ReplaySession {
     private final Map<Integer, Vitals> lastVitalsByStable = new HashMap<>();
     private final Map<Integer, byte[][]> lastInventoryByStable = new HashMap<>();
     private final Map<Integer, byte[][]> lastEquipmentByStable = new HashMap<>();
+    private final Map<Integer, Integer> lastGameModeByStable = new HashMap<>();
+    private final Map<Integer, Integer> lastHeldSlotByStable = new HashMap<>();
     // Spectate driver dedup: last inventory hash applied per spectator (skips
     // identical full-inventory rewrites, which flicker the client).
     private final Map<UUID, Integer> lastAppliedInventoryHash = new HashMap<>();
@@ -369,9 +372,14 @@ public final class ReplaySession {
 
         // Save the player's real state for restoration.
         org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        int ownHeld = 0;
+        try {
+            ownHeld = inv.getHeldItemSlot();
+        } catch (Exception ignored) {
+        }
         spectateSave.put(p.getUniqueId(), new SpectateSave(
                 p.getLocation().clone(), (float) p.getHealth(), p.getFoodLevel(),
-                p.getSaturation(), p.getGameMode(),
+                p.getSaturation(), p.getGameMode(), ownHeld,
                 dev.idebugger.echoreplay.record.EntityTickRecorder.serializeInventory(inv)));
         spectateStable.put(p.getUniqueId(), stable);
 
@@ -379,10 +387,14 @@ public final class ReplaySession {
         Integer runtime = stableToRuntime.remove(stable);
         if (runtime != null) destroyFor(runtime);
 
-        // Switch to survival so the held item renders first-person (the
-        // previous mode — often forced spectator — is saved + restored).
-        if (p.getGameMode() != org.bukkit.GameMode.SURVIVAL) {
-            p.setGameMode(org.bukkit.GameMode.SURVIVAL);
+        // Mirror the recorded player's gamemode (saved + restored on stop).
+        // Falls back to survival so the held item renders first-person.
+        org.bukkit.GameMode recMode = recordedMode(stable);
+        if (p.getGameMode() != recMode) {
+            try {
+                p.setGameMode(recMode);
+            } catch (Exception ignored) {
+            }
         }
 
         // Apply the recorded player's current state.
@@ -404,7 +416,39 @@ public final class ReplaySession {
             byte[][] eq = lastEquipmentByStable.get(stable);
             if (eq != null) applyInventoryToPlayer(p, equipmentAsInventory(eq));
         }
+        Integer held = lastHeldSlotByStable.get(stable);
+        if (held != null) {
+            applyHeldSlot(p, held);
+        }
         return true;
+    }
+
+    /** Recorded gamemode for a stable, defaulting to survival for old recordings. */
+    private static org.bukkit.GameMode recordedMode(int stable, Map<Integer, Integer> cache) {
+        Integer m = cache.get(stable);
+        if (m != null) {
+            try {
+                org.bukkit.GameMode gm = org.bukkit.GameMode.getByValue(m);
+                if (gm != null) return gm;
+            } catch (Exception ignored) {
+            }
+        }
+        return org.bukkit.GameMode.SURVIVAL;
+    }
+
+    private org.bukkit.GameMode recordedMode(int stable) {
+        return recordedMode(stable, lastGameModeByStable);
+    }
+
+    /** Apply a recorded held hotbar slot (0-8) to a spectating player. */
+    private static void applyHeldSlot(Player p, int slot) {
+        if (slot < 0 || slot > 8) return;
+        try {
+            if (p.getInventory().getHeldItemSlot() != slot) {
+                p.getInventory().setHeldItemSlot(slot);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
@@ -514,9 +558,12 @@ public final class ReplaySession {
         if (save == null || p == null || !p.isOnline()) return;
         try {
             if (save.inventory() != null) applyInventoryToPlayer(p, save.inventory());
+            applyHeldSlot(p, save.heldSlot());
             p.setFoodLevel(save.food());
             p.setSaturation(save.saturation());
-            if (p.getGameMode() == org.bukkit.GameMode.SURVIVAL) {
+            // Spectate owns the gamemode while active (it mirrors the
+            // recording), so always put the saved mode back on stop.
+            if (save.mode() != null && p.getGameMode() != save.mode()) {
                 p.setGameMode(save.mode());
             }
             applyVitalsToPlayer(p, save.health(), save.food(), save.saturation());
@@ -1076,6 +1123,8 @@ public final class ReplaySession {
         lastVitalsByStable.clear();
         lastInventoryByStable.clear();
         lastEquipmentByStable.clear();
+        lastGameModeByStable.clear();
+        lastHeldSlotByStable.clear();
         releaseSpectates();
         pendingSyncs.replaceAll((k, v) -> 0);
         syncedStablesFor.clear();
@@ -1317,6 +1366,8 @@ public final class ReplaySession {
             case TimelineEvent.WorldTime w -> onWorldTime(w);
             case TimelineEvent.PlayerVitals v -> onPlayerVitals(v);
             case TimelineEvent.PlayerInventory v -> onPlayerInventory(v);
+            case TimelineEvent.GameMode g -> onPlayerGameMode(g);
+            case TimelineEvent.HeldSlot h -> onPlayerHeldSlot(h);
             default -> {}
         }
     }
@@ -1333,6 +1384,28 @@ public final class ReplaySession {
         lastInventoryByStable.put(v.npcId(), v.slots());
         Player sp = spectatorOf(v.npcId());
         if (sp != null) applyInventoryToPlayer(sp, v.slots());
+    }
+
+    /** Record gamemode; mirror onto a real player who is spectating this npc. */
+    private void onPlayerGameMode(TimelineEvent.GameMode g) {
+        lastGameModeByStable.put(g.npcId(), g.mode());
+        Player sp = spectatorOf(g.npcId());
+        if (sp != null) {
+            org.bukkit.GameMode mode = recordedMode(g.npcId());
+            if (sp.getGameMode() != mode) {
+                try {
+                    sp.setGameMode(mode);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /** Record held hotbar slot; mirror onto a real player spectating this npc. */
+    private void onPlayerHeldSlot(TimelineEvent.HeldSlot h) {
+        lastHeldSlotByStable.put(h.npcId(), h.slot());
+        Player sp = spectatorOf(h.npcId());
+        if (sp != null) applyHeldSlot(sp, h.slot());
     }
 
     /** The first online real player spectating this stable, or null. */
