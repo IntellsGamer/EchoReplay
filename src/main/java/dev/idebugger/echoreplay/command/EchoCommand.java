@@ -635,31 +635,31 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             if (args.length == 1) {
                 boolean newState = prefs.toggle(p.getUniqueId());
                 p.sendMessage(Text.mm(newState
-                        ? "<green>Playback border particles enabled for you.</green>"
-                        : "<gray>Playback border particles disabled for you.</gray>"));
+                        ? "<green>Borders enabled for you (selection + playback).</green>"
+                        : "<gray>Borders disabled for you (selection + playback).</gray>"));
                 return;
             }
             String arg = args[1].toLowerCase();
             switch (arg) {
                 case "on", "enable", "enabled", "true" -> {
                     prefs.setEnabled(p.getUniqueId(), true);
-                    p.sendMessage(Text.mm("<green>Playback border particles enabled for you.</green>"));
+                    p.sendMessage(Text.mm("<green>Borders enabled for you (selection + playback).</green>"));
                 }
                 case "off", "disable", "disabled", "false" -> {
                     prefs.setEnabled(p.getUniqueId(), false);
-                    p.sendMessage(Text.mm("<gray>Playback border particles disabled for you.</gray>"));
+                    p.sendMessage(Text.mm("<gray>Borders disabled for you (selection + playback).</gray>"));
                 }
                 case "toggle" -> {
                     boolean newState = prefs.toggle(p.getUniqueId());
                     p.sendMessage(Text.mm(newState
-                            ? "<green>Playback border particles enabled for you.</green>"
-                            : "<gray>Playback border particles disabled for you.</gray>"));
+                            ? "<green>Borders enabled for you (selection + playback).</green>"
+                            : "<gray>Borders disabled for you (selection + playback).</gray>"));
                 }
                 case "status", "info", "state" -> {
                     boolean enabled = prefs.isEnabled(p.getUniqueId());
                     p.sendMessage(Text.mm(enabled
-                            ? "<gray>Playback border particles: <green>enabled</green>.</gray>"
-                            : "<gray>Playback border particles: <red>disabled</red>.</gray>"));
+                            ? "<gray>Borders (selection + playback): <green>enabled</green>.</gray>"
+                            : "<gray>Borders (selection + playback): <red>disabled</red>.</gray>"));
                 }
                 default -> p.sendMessage(Text.mm("<red>Usage: /er border [on|off|toggle|status]</red>"));
             }

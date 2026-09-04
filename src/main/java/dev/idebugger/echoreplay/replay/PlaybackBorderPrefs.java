@@ -11,8 +11,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Per-player personal preference for playback border particles.
- * Stores the set of UUIDs that have *disabled* the border. Default is enabled.
+ * Per-player personal preference for border particles (selection/region
+ * outlines and playback borders). Stores the set of UUIDs that have
+ * *disabled* borders via {@code /er border}. Default is enabled.
  * Persists to {@code border_prefs.yml} in the plugin data folder so the
  * toggle survives restarts and is visible per-player.
  */
