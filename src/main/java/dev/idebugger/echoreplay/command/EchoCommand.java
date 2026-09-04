@@ -441,7 +441,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void watch(CommandSender s) {
-        if (!checkPerm(s, "echoreplay.play")) return;
+        if (!checkPerm(s, "echoreplay.watch")) return;
         requirePlayer(s, p -> s.sendMessage(Text.mm(plugin.replayManager().watch(p))));
     }
 

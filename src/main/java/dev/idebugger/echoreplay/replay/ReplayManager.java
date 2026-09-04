@@ -138,16 +138,11 @@ public final class ReplayManager implements Listener {
                 boolean virtual = forceVirtual || plugin.cfg().getBoolean("replay.virtual-packets-only", false);
                 session = new ReplaySession(plugin, name, world, virtual, decoded);
                 // record snapshot restore (world mode) is applied within session
+                // Only the player who ran /er play becomes a viewer here.
+                // Bystanders are never force-added (and thus never gamemode-
+                // switched): they opt in with /er watch.
                 if (sender != null && sender.isOnline()) {
                     session.addViewer(sender);
-                }
-                if (session.viewerIds().isEmpty()) {
-                    List<Player> nearby = world.getPlayers().stream().filter(p ->
-                            session.cuboid().contains(p.getLocation().getBlockX(),
-                                    p.getLocation().getBlockY(), p.getLocation().getBlockZ())).toList();
-                    for (Player p : nearby) {
-                        if (p.hasPermission("echoreplay.play")) session.addViewer(p);
-                    }
                 }
                 session.play();
                 if (sender != null) sender.sendMessage(Text.mm("<green>Playing '" + name + "' in " + world.getName() + ".</green>"));
