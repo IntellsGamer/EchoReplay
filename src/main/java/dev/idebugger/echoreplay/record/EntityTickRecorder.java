@@ -239,6 +239,7 @@ public final class EntityTickRecorder {
 
     private record Vitals(float health, int food, float saturation) {}
     private final Map<UUID, Vitals> lastVitals = new HashMap<>();
+    private final Map<UUID, byte[][]> lastInventoryBytes = new HashMap<>();
 
     /**
      * Records a tracked player's vitals (on change) and full inventory (on
@@ -246,7 +247,7 @@ public final class EntityTickRecorder {
      * spectate them in first person with the same health/hunger/items.
      */
     private void capturePlayerState(RecordingSession s, Player p, UUID uuid, boolean baseline) {
-        float health = p.getHealth();
+        float health = (float) p.getHealth();
         int food = p.getFoodLevel();
         float sat = p.getSaturation();
         Vitals prev = lastVitals.get(uuid);
@@ -255,11 +256,22 @@ public final class EntityTickRecorder {
             s.emit(new TimelineEvent.PlayerVitals(s.mediaMillis(), s.npcIdFor(uuid), health, food, sat));
         }
         org.bukkit.inventory.PlayerInventory inv = p.getInventory();
-        if (baseline || inv.containsChanges()) {
+        byte[][] current = serializeInventory(inv);
+        if (baseline || inventoryChanged(uuid, current)) {
             s.emit(new TimelineEvent.PlayerInventory(s.mediaMillis(), s.npcIdFor(uuid),
-                    serializeInventory(inv)));
-            inv.clearChanges();
+                    current));
+            lastInventoryBytes.put(uuid, current);
         }
+    }
+
+    private boolean inventoryChanged(UUID uuid, byte[][] current) {
+        byte[][] prev = lastInventoryBytes.get(uuid);
+        if (prev == null) return true;
+        if (prev.length != current.length) return true;
+        for (int i = 0; i < current.length; i++) {
+            if (!java.util.Arrays.equals(prev[i], current[i])) return true;
+        }
+        return false;
     }
 
     /**
@@ -269,13 +281,13 @@ public final class EntityTickRecorder {
      */
     public static byte[][] serializeInventory(org.bukkit.inventory.PlayerInventory inv) {
         byte[][] out = new byte[41][];
-        org.bukkit.ItemStack[] main = inv.getContents();
+        org.bukkit.inventory.ItemStack[] main = inv.getContents();
         if (main != null) {
             for (int i = 0; i < 36 && i < main.length; i++) {
                 out[i] = EquipmentRecorder.serializeItem(main[i]);
             }
         }
-        org.bukkit.ItemStack[] armor = inv.getArmorContents();
+        org.bukkit.inventory.ItemStack[] armor = inv.getArmorContents();
         if (armor != null) {
             for (int i = 0; i < 4 && i < armor.length; i++) {
                 out[36 + i] = EquipmentRecorder.serializeItem(armor[i]);
@@ -288,6 +300,7 @@ public final class EntityTickRecorder {
     /** Drop a tracked player's vitals baseline when they leave the region. */
     public void forgetVitals(UUID uuid) {
         lastVitals.remove(uuid);
+        lastInventoryBytes.remove(uuid);
     }
 
     /** Clear per-entity state when a recording starts. */
@@ -298,6 +311,7 @@ public final class EntityTickRecorder {
         lastVel.clear();
         lastPlayerSeen.clear();
         lastVitals.clear();
+        lastInventoryBytes.clear();
         inRegion.clear();
     }
 }

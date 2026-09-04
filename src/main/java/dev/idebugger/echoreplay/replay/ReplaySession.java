@@ -363,7 +363,7 @@ public final class ReplaySession {
         // Save the player's real state for restoration.
         org.bukkit.inventory.PlayerInventory inv = p.getInventory();
         spectateSave.put(p.getUniqueId(), new SpectateSave(
-                p.getLocation().clone(), p.getHealth(), p.getFoodLevel(),
+                p.getLocation().clone(), (float) p.getHealth(), p.getFoodLevel(),
                 p.getSaturation(), p.getGameMode(),
                 dev.idebugger.echoreplay.record.EntityTickRecorder.serializeInventory(inv)));
         spectateStable.put(p.getUniqueId(), stable);
@@ -579,7 +579,7 @@ public final class ReplaySession {
     /** Cosmetic vitals: never actually hurts (clamped above lethal). */
     private void applyVitalsToPlayer(Player p, float health, int food, float saturation) {
         try {
-            float h = Math.max(1.0f, Math.min(health, p.getMaxHealth()));
+            float h = Math.max(1.0f, Math.min(health, (float) p.getMaxHealth()));
             p.setHealth(h);
             p.setFoodLevel(Math.max(0, Math.min(20, food)));
             p.setSaturation(Math.max(0f, Math.min(20f, saturation)));
@@ -591,14 +591,14 @@ public final class ReplaySession {
         if (slots == null) return;
         try {
             org.bukkit.inventory.PlayerInventory inv = p.getInventory();
-            org.bukkit.ItemStack[] main = new org.bukkit.ItemStack[36];
+            org.bukkit.inventory.ItemStack[] main = new org.bukkit.inventory.ItemStack[36];
             int n = Math.min(slots.length, 41);
             for (int i = 0; i < 36 && i < n; i++) {
                 main[i] = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[i]);
             }
             inv.setContents(main);
             if (n > 40) {
-                inv.setArmorContents(new org.bukkit.ItemStack[]{
+                inv.setArmorContents(new org.bukkit.inventory.ItemStack[]{
                         dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[36]),
                         dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[37]),
                         dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[38]),
@@ -1631,8 +1631,8 @@ public final class ReplaySession {
                 case 0 -> inv.setItemInMainHand(stack);
                 case 1 -> inv.setItemInOffHand(stack);
                 default -> {
-                    org.bukkit.ItemStack[] armor = inv.getArmorContents();
-                    org.bukkit.ItemStack[] a = armor != null ? armor.clone() : new org.bukkit.ItemStack[4];
+                    org.bukkit.inventory.ItemStack[] armor = inv.getArmorContents();
+                    org.bukkit.inventory.ItemStack[] a = armor != null ? armor.clone() : new org.bukkit.inventory.ItemStack[4];
                     int ai = slot - 2; // 2=boots 3=legs 4=chest 5=helmet
                     if (ai >= 0 && ai < 4) {
                         a[ai] = stack;

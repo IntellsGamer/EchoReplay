@@ -16,7 +16,8 @@ public sealed interface TimelineEvent
         TimelineEvent.SneakSprint, TimelineEvent.Mount, TimelineEvent.Sound, TimelineEvent.Particle,
         TimelineEvent.Chat, TimelineEvent.WorldTime, TimelineEvent.Weather, TimelineEvent.Explosion,
         TimelineEvent.ItemUse, TimelineEvent.Teleport, TimelineEvent.Effect, TimelineEvent.CustomName,
-        TimelineEvent.Marker, TimelineEvent.EntityStatus {
+        TimelineEvent.Marker, TimelineEvent.EntityStatus, TimelineEvent.PlayerVitals,
+        TimelineEvent.PlayerInventory {
 
     long tickMillis();
 
