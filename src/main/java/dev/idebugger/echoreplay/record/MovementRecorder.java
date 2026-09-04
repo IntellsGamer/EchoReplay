@@ -21,6 +21,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * packets, and region membership comes from the main-thread tick recorder.
  * Events are only emitted when the pose changed beyond epsilon, which cuts
  * the 20-40 packets/sec/client firehose down to genuine movement.
+ *
+ * <p>Head tracking: the recorded {@code yaw} is the smoothed BODY yaw (motion
+ * direction, like a real client renders it) and {@code headYaw} is the
+ * absolute look direction, so a strafe-turning player's head actually tracks
+ * in the replay instead of being welded to the body.
+ *
  * No-op when no recording is active.
  */
 public final class MovementRecorder extends PacketListenerAbstract {
@@ -29,11 +35,14 @@ public final class MovementRecorder extends PacketListenerAbstract {
     // stored, so nothing can drift).
     private static final double POS_EPS = 1e-4;
     private static final float ROT_EPS = 0.1f;
+    private static final double MOTION_EPS_SQ = 0.01 * 0.01; // 1cm
+    // How quickly the body faces the motion direction (0..1).
+    private static final float BODY_SMOOTH = 0.3f;
 
     private final EchoReplay plugin;
     private final Map<UUID, LastMove> lastSent = new ConcurrentHashMap<>();
 
-    private record LastMove(double x, double y, double z, float yaw, float pitch) {}
+    private record LastMove(double x, double y, double z, float yaw, float pitch, float bodyYaw) {}
 
     public MovementRecorder(EchoReplay plugin) {
         super(PacketListenerPriority.HIGH);
@@ -70,6 +79,7 @@ public final class MovementRecorder extends PacketListenerAbstract {
         float yaw, pitch;
         boolean onGround;
         try {
+            LastMove prev = lastSent.get(uuid);
             if (pt == PacketType.Play.Client.PLAYER_POSITION_AND_ROTATION) {
                 var w = new com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPositionAndRotation(event);
                 var pos = w.getPosition();
@@ -81,7 +91,7 @@ public final class MovementRecorder extends PacketListenerAbstract {
                 var w = new com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientPlayerPosition(event);
                 var pos = w.getPosition();
                 x = pos.x; y = pos.y; z = pos.z;
-                LastMove prev = lastSent.get(uuid);
+                // Head keeps its last look; body turns toward the motion.
                 yaw = prev != null ? prev.yaw() : 0f;
                 pitch = prev != null ? prev.pitch() : 0f;
                 onGround = w.isOnGround();
@@ -90,27 +100,55 @@ public final class MovementRecorder extends PacketListenerAbstract {
                 yaw = w.getYaw();
                 pitch = w.getPitch();
                 onGround = w.isOnGround();
-                LastMove prev = lastSent.get(uuid);
                 if (prev == null) return; // no position baseline yet
                 x = prev.x(); y = prev.y(); z = prev.z();
             }
         } catch (Exception e) {
             return; // never touch Bukkit from Netty; drop undecodable packets
         }
+
         LastMove prev = lastSent.get(uuid);
+        float bodyYaw;
+        if (!wantRot && prev != null) {
+            bodyYaw = prev.bodyYaw(); // rotation-only: body unchanged
+        } else if (prev == null) {
+            bodyYaw = yaw;
+        } else {
+            double dx = x - prev.x(), dz = z - prev.z();
+            if (dx * dx + dz * dz > MOTION_EPS_SQ) {
+                // Minecraft yaw convention: 0 = +Z, 90 = -X.
+                double motion = Math.toDegrees(Math.atan2(-dx, dz));
+                bodyYaw = smoothYaw(prev.bodyYaw(), (float) motion, BODY_SMOOTH);
+            } else {
+                bodyYaw = prev.bodyYaw();
+            }
+        }
+
         if (prev != null
                 && Math.abs(prev.x() - x) < POS_EPS
                 && Math.abs(prev.y() - y) < POS_EPS
                 && Math.abs(prev.z() - z) < POS_EPS
                 && Math.abs(prev.yaw() - yaw) < ROT_EPS
-                && Math.abs(prev.pitch() - pitch) < ROT_EPS) {
+                && Math.abs(prev.pitch() - pitch) < ROT_EPS
+                && Math.abs(angleDiff(prev.bodyYaw(), bodyYaw)) < 0.5f) {
             return;
         }
-        lastSent.put(uuid, new LastMove(x, y, z, yaw, pitch));
+        lastSent.put(uuid, new LastMove(x, y, z, yaw, pitch, bodyYaw));
         int npc = s.npcIdFor(uuid);
         s.emit(new TimelineEvent.Move(s.mediaMillis(), npc,
                 new Vec3d(x, y, z),
-                new Rotation(pitch, yaw, yaw),
+                new Rotation(pitch, bodyYaw, yaw),
                 onGround));
+    }
+
+    /** Wrap-aware lerp of a yaw angle. */
+    private static float smoothYaw(float from, float to, float t) {
+        float delta = ((to - from + 540f) % 360f) - 180f;
+        return from + delta * t;
+    }
+
+    /** Smallest absolute difference between two yaw angles, in degrees. */
+    private static float angleDiff(float a, float b) {
+        return Math.abs(((a - b + 540f) % 360f) - 180f);
     }
 }

@@ -30,8 +30,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class FakeEntityTracker {
 
-    /** Start allocating downward from MAX to avoid collisions with live entities. */
-    public static final int ID_START = Integer.MAX_VALUE - 1000;
+    /**
+     * Fake entity ids allocate downward from just below MAX_VALUE, far above
+     * any id a real server assigns (those start at 1 and grow by 1). The band
+     * is 1,000,000 ids wide; when it exhausts, {@link #isExhausted()} lets the
+     * session skip further spawns instead of wrapping into real entity ids.
+     */
+    public static final int ID_START = Integer.MAX_VALUE - 1_000_000;
     private final AtomicInteger nextId = new AtomicInteger(ID_START);
 
     public FakeEntityTracker() {
@@ -41,7 +46,9 @@ public final class FakeEntityTracker {
         return nextId.getAndDecrement();
     }
 
-    public void reset() {
+    /** True once the high id band is used up (spawning must stop). */
+    public boolean isExhausted() {
+        return nextId.get() < 0;
     }
 
     private static void send(Player viewer, com.github.retrooper.packetevents.wrapper.PacketWrapper<?> wrapper) {

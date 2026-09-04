@@ -15,9 +15,7 @@ import org.bukkit.event.block.BlockPhysicsEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 
 import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -48,9 +46,18 @@ public final class ReplayManager implements Listener {
             session.stop();
             // Drain any pending terrain restore synchronously: at shutdown
             // there is no tick loop left, and abandoning it would permanently
-            // leave snapshot blocks where the live terrain was.
+            // leave snapshot blocks where the live terrain was. Bounded by
+            // wall clock (shutdown can be force-killed at any moment) so a
+            // huge restore cannot hang the server shutdown forever.
+            long deadline = System.currentTimeMillis() + 60_000L;
             int guard = 0;
-            while (!session.tick() && guard++ < 100000) {
+            while (!session.tick() && guard++ < 100_000 && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(1L);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
             session = null;
         }
@@ -139,7 +146,7 @@ public final class ReplayManager implements Listener {
                             session.cuboid().contains(p.getLocation().getBlockX(),
                                     p.getLocation().getBlockY(), p.getLocation().getBlockZ())).toList();
                     for (Player p : nearby) {
-                        if (p.hasPermission("echoreplay.watch")) session.addViewer(p);
+                        if (p.hasPermission("echoreplay.play")) session.addViewer(p);
                     }
                 }
                 session.play();
@@ -217,16 +224,12 @@ public final class ReplayManager implements Listener {
         if (session == null) return "<red>No replay is playing.</red>";
         String g = stoppingGuard();
         if (g != null) return g;
+        if (session.isViewer(viewer)) return "<gray>You are already watching.</gray>";
+        // addViewer() queues a full state sync (entity snapshot + past block
+        // changes in virtual mode) that the session drains over the next
+        // few ticks.
         session.addViewer(viewer);
-        // send current fake-entity state to this viewer
-        for (Map.Entry<Integer, Integer> e : sessionEntrySnapshot()) {
-            // re-send current entity spawn+pose (simplified: reseek render one-shot)
-        }
         return "<green>You are now watching the replay.</green>";
-    }
-
-    private List<Map.Entry<Integer, Integer>> sessionEntrySnapshot() {
-        return new ArrayList<>();
     }
 
     public String leave(Player p) {

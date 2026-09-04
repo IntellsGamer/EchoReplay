@@ -1,125 +1,162 @@
-# EchoReplay Binary Format
+# EchoReplay recording file format (`.echoreplay.gz`, v1)
 
-Recordings are saved as gzip-compressed little-endian binary files with the `.echoreplay.gz` extension.
+All integers are **little-endian**. Strings are `u16` byte-length + UTF-8 bytes.
 
-## Top-level Structure
-
-```
-magic:          u32 LE  = 0x45524550 ("EREP")
-version:        u32 LE  = 1
-section_count:  u32 LE
-[sections...]
-```
-
-## Sections
-
-Each section:
+## Container
 
 ```
-type:  u32 LE   (see Section Types)
-length: u32 LE  (payload bytes, excluding this 8-byte header)
-payload: u8[length]
+offset  size  field
+0       4     magic  = "ECHO"
+4       2     format = 1
+6       2     flags  = 0 (reserved)
 ```
 
-### Section Types
-
-| ID | Name | Description |
-|---|---|---|
-| 1 | HEADER | Recording header (world, bounds, ticks, tick rate) |
-| 2 | SNAPSHOT | Full palette + block snapshot |
-| 3 | INDEX | Per-tick seek index (tick → byte offset) |
-| 4 | TIMELINE | Encoded timeline events |
-| 5 | META | Name, description, markers (NBT-like key-value) |
-
----
-
-### HEADER Section (type=1)
+Then a sequence of **sections** until EOF:
 
 ```
-world_uid:  u128 LE   (UUID most+least)
-min_x:      i32 LE
-min_y:      i32 LE
-min_z:      i32 LE
-max_x:      i32 LE
-max_y:      i32 LE
-max_z:      i32 LE
-total_ticks: u32 LE
-tick_rate:   u32 LE   (ticks per second, default 20)
-timestamp:  u64 LE   (epoch millis)
+u32  section type
+u32  body length (bytes)
+body
 ```
 
-### SNAPSHOT Section (type=2)
+Section types:
+
+| type | name | body |
+|------|------|------|
+| 1 | META | see below |
+| 2 | PALETTE | `u32 count` + `count` × string |
+| 3 | BLOCKS | `u32 sizeX, u32 sizeY, u32 sizeZ, u8 bits`, `u32 longCount`, `longCount` × u64 |
+| 4 | BLOCK_NBT | packed tile-NBT blob |
+| 5 | ENTITIES | reserved (currently empty body) |
+| 6 | TIMELINE | one or more event entries (see below) |
+
+Unknown section types are skipped (forward compatibility).
+
+### META body
 
 ```
-palette_length: u16 LE
-[palette entries: u32 LE block state ID each]
-block_count: u32 LE
-[block data: varint-encoded packed indices]
+string  serverVersion        e.g. "1.21.5"
+string  worldUuid            "123e4567-..."
+string  worldName            e.g. "world"
+i32     minX, i32 minY, i32 minZ, i32 maxX, i32 maxY, i32 maxZ
+i64     epochMillis          wall-clock time the recording started
+string  recorderUuid
+string  recorderName
+i64     durationMillis       total recorded media time
+string  name                 recording name
 ```
 
-Blocks are packed at 4 bits per block into a byte stream, using paletted storage similar to vanilla.
+### BLOCKS body
 
-### INDEX Section (type=3)
+`sizeX × sizeY × sizeZ` palette indices stored in a dense grid, **row-major
+with x fastest**: index `i = (dy * sizeZ + dz) * sizeX + dx`, where
+`(dx, dy, dz)` are offsets from the cuboid min corner. Indices are packed
+`bits`-per-entry, least significant first, into u64 words (max 32 entries per
+word). `bits = ceil(log2(paletteSize))`.
 
-```
-entry_count: u32 LE
-[entries: tick_index u32 LE | byte_offset u32 LE]
-```
+Grid coordinates map to world blocks as
+`worldX = minX + dx` (same for Y/Z).
 
-### TIMELINE Section (type=4)
-
-```
-entry_count: u32 LE
-[entries]
-```
-
-Each timeline entry:
+### BLOCK_NBT body
 
 ```
-type:     u8       (event type id)
-tick:     u32 LE   (tick number from start)
-length:   u16 LE   (payload bytes)
-payload:  u8[length]
+u32 sizeX, u32 sizeY, u32 sizeZ     (dimensions, informational)
+u32 count
+count × {
+  i32 relX, i32 relY, i32 relZ      (offsets from cuboid min)
+  u32 nbtLen
+  u8  nbt[nbtLen]                    (SnbtBytes-encoded BlockState NBT)
+}
 ```
 
-#### Timeline Event Types
+### PALETTE body
 
-| ID | Record Type | Payload |
-|---|---|---|
-| 0 | BLOCK_SET | varint x, varint y, varint z, u32 block_state |
-| 1 | MULTI_BLOCK | varint count, [(varint x, varint y, varint z, u32 block_state)...] |
-| 2 | PLAYER_SPAWN | varint npc_id, uuid, string name, skin, vec3d, rotation, equipment list, metadata |
-| 3 | PLAYER_LEAVE | varint npc_id, u8 reason |
-| 4 | ENTITY_SPAWN | varint npc_id, u8 entity_type, vec3d, metadata |
-| 5 | ENTITY_LEAVE | varint npc_id |
-| 6 | MOVE | varint npc_id, vec3d, rotation, u8 flags |
-| 7 | TELEPORT | varint npc_id, vec3d, rotation |
-| 8 | VELOCITY | varint npc_id, vec3d, u16 duration |
-| 9 | DEATH | varint npc_id |
-| 10 | CHAT | varint npc_id, string json_text |
-| 11 | EQUIPMENT | varint npc_id, u8 slot, bytes serialized item |
-| 12 | SNEAK_SPRINT | varint npc_id, u8 flags |
-| 13 | SOUND | string id, u8 source, vec3d, f32 volume, f32 pitch, u32 seed |
-| 14 | PARTICLE | string id, u8 mode, vec3d, f32 count, ... |
-| 15 | EXPLOSION | vec3d center, f32 radius, [affected blocks] |
-| 16 | PISTON | varint x, varint y, varint z, u8 direction, u8 extending |
-| 17 | BLOCK_ANIMATION | varint x, varint y, varint z, varint block, varint data |
-| 18 | BLOCK_ACTION | varint x, varint y, varint z, varint type, [varints] |
-| 19 | PLAYER_ANIMATION | varint npc_id, u8 anim_id |
-| 20 | DAMAGE | varint npc_id, f32 hearts |
-| 21 | META_STRING | string key, string value |
-| 22 | META_INT | string key, varint value |
-| 23 | META_FLOAT | string key, f32 value |
-| 24 | META_BOOL | string key, u8 value |
-| 25 | META_LONG | string key, i64 LE value |
-| 26 | META_DOUBLE | string key, f64 LE value |
-| 27 | META_COMPONENT | string key, string json value |
+`u32 count` + `count` × string, each string a full
+`minecraft:<block>[props]` state string (Bukkit `BlockData#getAsString`).
+Index 0 is always `minecraft:air`.
 
-### META Section (type=5)
+### TIMELINE entries
 
-Key-value pairs serialized as NBT-like string→byte arrays:
+Each entry:
 
 ```
-entry_count: u32 LE
-[entries: string key, u32 LE byte_length, bytes value]
+u64  tickMillis   media time since recording start
+u8   type         event type id (below)
+u16  bodyLen
+u8   body[bodyLen]
 ```
+
+The reader tolerates multiple TIMELINE sections (they are concatenated and
+sorted by `tickMillis` before playback).
+
+## Event type ids
+
+| id | event | body |
+|----|-------|------|
+| 0 | KEEP_ALIVE | — |
+| 1 | BLOCK_SET | `i16 relX, i16 relY, i16 relZ, i32 paletteIndex, i32 nbtLen, u8 nbt[nbtLen]` |
+| 2 | BLOCK_BREAK_ANIM | `i16 relX, i16 relY, i16 relZ, i32 breakerNpcId, u8 stage` |
+| 3 | MULTI_BLOCK | `i32 n` + `n` × BLOCK_SET body |
+| 4 | PLAYER_SPAWN | `i32 npcId, u64 uuidHi, u64 uuidLo, string name, string skinValue, string skinSig, f64 x,y,z, f32 pitch,yaw,headYaw, i32 eqCount, eqCount × {i32 len, u8 bytes}, i32 mdLen, u8 md[mdLen]` |
+| 5 | PLAYER_LEAVE | `i32 npcId, u8 reason` |
+| 6 | ENTITY_SPAWN | `i32 npcId, u64 uuidHi, u64 uuidLo, string typeKey ("minecraft:zombie"), f64 x,y,z, f32 pitch,yaw,headYaw, i32 mdLen, u8 md[mdLen]` |
+| 7 | ENTITY_LEAVE | `i32 npcId` |
+| 8 | MOVE | `i32 npcId, f64 x,y,z, f32 pitch,yaw,headYaw, u8 onGround` |
+| 9 | VELOCITY | `i32 npcId, f64 x,y,z` |
+| 10 | ANIMATION | `i32 npcId, i32 anim` (0 = swing main, 1 = swing off) |
+| 11 | METADATA | `i32 npcId, i32 len, u8 raw[len]` (raw entity-metadata patch; not replayed) |
+| 12 | EQUIPMENT | `i32 npcId, i32 slot (0=main .. 5=helmet), i32 len, u8 bytes[len]` (ItemStack NBT) |
+| 13 | POSE | `i32 npcId, i32 poseId` (EntityPose ordinal) |
+| 14 | DAMAGE | `i32 npcId, string source, f64 amount, i32 animation` |
+| 15 | DEATH | `i32 npcId` |
+| 16 | SNEAK_SPRINT | `i32 npcId, i32 flags` (entity-flag byte) |
+| 17 | MOUNT | `i32 npcId, i32 vehicleNpcId` (recorded; not replayed) |
+| 18 | SOUND | `string key, string category, f64 x,y,z, f32 volume, f32 pitch` |
+| 19 | PARTICLE | `string particleKey, f64 x,y,z, f32 dx,dy,dz, f32 speed, i32 count` |
+| 20 | CHAT | `i32 npcId, string json` |
+| 21 | WORLD_TIME | `i64 time, u8 cycling` |
+| 22 | WEATHER | `i32 rainStrength, i32 thunderStrength` |
+| 23 | EXPLOSION | `f64 x,y,z, f32 power` |
+| 24 | ITEM_USE | `i32 npcId, i32 hand, u8 started` |
+| 25 | TELEPORT | `i32 npcId, f64 x,y,z, f32 pitch,yaw,headYaw` |
+| 26 | EFFECT | `i32 npcId, u8 add, string effectKey, i32 len, u8 data[len]` |
+| 27 | CUSTOM_NAME | `i32 npcId, string componentJson` |
+| 28 | MARKER | `string name` |
+| 29 | ENTITY_STATUS | `i32 npcId, u8 status` |
+
+`npcId` values are session-local opaque integers assigned in first-seen order.
+
+### Entity spawn metadata blob (PLAYER_SPAWN / ENTITY_SPAWN `md`)
+
+```
+u8 count
+count × { u8 index, u8 kind, i32 value }
+kind: 1 = INT, 2 = BYTE, 3 = ITEMSTACK (value = i32 len + bytes), 4 = BOOLEAN
+```
+
+Currently captured: baby-ness (index 15; BYTE for zombie-family, INT for
+other ageables), slime/magma size (index 16, INT), firework item +
+shot-at-angle.
+
+## Coordinates
+
+- Entity/player positions, sounds, particles, explosions: **absolute world
+  coordinates** (f64).
+- Block positions (BLOCK_SET, BLOCK_BREAK_ANIM, BLOCK_NBT): **relative to the
+  cuboid min corner** (i16 / i32).
+- Rotation: `pitch, yaw, headYaw` in degrees, Minecraft convention.
+
+## Crash-safety checkpoints
+
+While recording, the plugin also writes a **raw (uncompressed)** checkpoint
+file `name.echoreplay.gz.partial` with the same header + section framing:
+
+- header sections (META/BLOCKS/BLOCK_NBT/ENTITIES) once,
+- repeated PALETTE + TIMELINE sections per flush (the **last** PALETTE wins,
+  so every surviving event index stays resolvable).
+
+Because it is not gzipped, a crash mid-write leaves a file whose *complete*
+sections are still parseable. On next plugin start the checkpoint is turned
+into a normal gzip recording (duration recomputed from the last surviving
+event); if the final `.echoreplay.gz` already exists the stale checkpoint is
+deleted.

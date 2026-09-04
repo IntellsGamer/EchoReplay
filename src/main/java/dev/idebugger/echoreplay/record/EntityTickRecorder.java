@@ -103,10 +103,17 @@ public final class EntityTickRecorder {
             if (isPlayer) {
                 EntityPose prevPlayer = lastPlayerSeen.get(uuid);
                 if (prevPlayer == null) {
+                    // First observation — a fresh joiner (deduped against
+                    // ConnectionRecorder's join event) or a player re-entering
+                    // the region after walking out. Carry real skin + current
+                    // equipment so re-entry does not spawn a skinless,
+                    // unarmed fake player.
                     if (s.markEntitySpawned(uuid)) {
                         int npc = s.npcIdFor(uuid);
+                        Player pl = (Player) e;
                         s.emit(new TimelineEvent.PlayerSpawn(s.mediaMillis(), npc, uuid,
-                                e.getName(), null, pos, rot, null, null));
+                                pl.getName(), ConnectionRecorder.skin(pl), pos, rot,
+                                ConnectionRecorder.equipment(pl), null));
                     }
                     lastPlayerSeen.put(uuid, new EntityPose(pos, rot));
                 } else {

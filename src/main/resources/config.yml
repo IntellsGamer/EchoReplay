@@ -1,38 +1,83 @@
+# EchoReplay configuration
+#
+# Selection
 selection:
+  # Material of the selection wand (any valid Material name)
   wand-material: GOLDEN_AXE
+  # Maximum selectable volume in blocks (bypass with echoreplay.bypass-limits)
   max-volume: 300000
+  # Maximum x/z span of the selection in blocks
   max-horizontal-span: 256
-  outline-particles: true
+  # Render a wireframe outline (particles) of each player's selection to that
+  # player, every 10 ticks. Off by default to keep tick cost at zero for
+  # players who never select.
+  outline-particles: false
+
+# Recording
 recording:
+  # Grow the recorded region by this many blocks on every side (clamped to
+  # world height limits) so edge activity is not cut off.
   margin-blocks: 8
+  # How often (seconds) buffered events are flushed to the crash-safety
+  # checkpoint file (name.echoreplay.gz.partial). A crash mid-recording can
+  # lose at most this many seconds.
   flush-seconds: 15
+  # Record chat messages of players in the region
   capture-chat: true
-  capture-time: true
+  # Record sound effects sent to clients inside the region
+  capture-sounds: true
+  # Record particle effects sent to clients inside the region
   capture-particles: true
+  # Drop particles above this per-media-second rate (0 = unlimited)
   max-particles-per-second: 400
+  # Record world time changes (driven back during replay if replay.drive-world-time)
+  capture-time: true
+  # Hard stop after this many minutes of recorded media time
   max-duration-minutes: 30
-  # Region-wide diff: a background thread continuously rescans the whole cuboid
-  # to catch EVERY block change, even ones that never fire a Bukkit event
-  # (crystal explosions, cancelled breaks, plugin writes, obsidian/portal
-  # formation). Runs async and full-time (no interval gap).
-  scan-interval-ticks: 1
+  # Region-wide diff: a background thread rescans the whole cuboid to catch
+  # EVERY block change, even ones that never fire a Bukkit event (crystal
+  # explosions, cancelled breaks, plugin writes, portal formation).
+  scan-interval-ticks: 1      # schedule a diff pass every N ticks (1 = full-time)
+  scan-ms-per-pass: 12        # CPU budget per diff pass in ms (clamped 1..40)
+  snapshot:
+    # Secondary cap (blocks/tick) for the pre-record terrain snapshot
+    # (primary cap is a 10ms time budget per tick)
+    blocks-per-tick: 8000
+
+# Replay
 replay:
+  # When true, replay sends block changes as viewer-only packets instead of
+  # restoring the world (no world writes at all)
   virtual-packets-only: false
+  # Force viewers into spectator mode while watching (previous gamemode is
+  # restored when they leave or playback stops)
   force-spectator: true
+  # Players within this many blocks of the cuboid see the replay automatically
   auto-watch-radius: 32
+  # Capture the live terrain before a world-mode replay and restore it on stop
   backup-live-cuboid: true
+  # Drive the real world's time-of-day from the recording while playing
+  # (world mode only)
   drive-world-time: false
+  # Cancel block physics inside the cuboid while a world-mode replay runs
   physics-frozen: true
+  # Skip recorded sounds/particles when playing faster than this speed
   skip-sfx-when-speed-above: 2.0
+  # Initial playback speed
   default-speed: 1.0
+  # Per-tick CPU budget (ms) for the streaming phases (snapshot/restore/seek)
+  phase-max-ms-per-tick: 8
   border:
+    # Filled-face particle border around the playback region
     enabled: true
     particle: END_ROD
     interval-ticks: 4
     step: 2.0
     max-per-frame: 300
-  snapshot:
-    blocks-per-tick: 8000
+
+# Storage
 storage:
   directory: recordings
+  # Keep the crash-safety checkpoint file after a successful save (it is
+  # deleted on the next plugin start instead). false = delete immediately.
   keep-partial-on-crash: true

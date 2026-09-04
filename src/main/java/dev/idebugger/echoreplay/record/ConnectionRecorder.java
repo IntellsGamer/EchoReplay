@@ -91,7 +91,6 @@ public final class ConnectionRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
         if (p == null) return;
-        var from = p.getWorld().getUID().equals(s.world().getUID());
         var to = e.getTo() != null && e.getTo().getWorld() != null && e.getTo().getWorld().getUID().equals(s.world().getUID());
         int npc = s.npcIdFor(p.getUniqueId());
         if (to) {
@@ -101,7 +100,7 @@ public final class ConnectionRecorder implements Listener {
         }
     }
 
-    private static PlayerSkin skin(Player p) {
+    static PlayerSkin skin(Player p) {
         try {
             com.github.retrooper.packetevents.protocol.player.User user =
                     com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager().getUser(p);
@@ -119,23 +118,23 @@ public final class ConnectionRecorder implements Listener {
         return new PlayerSkin(null, null);
     }
 
-    private static Vec3d pos(Player p) {
+    static Vec3d pos(Player p) {
         return pos(p.getLocation());
     }
 
-    private static Vec3d pos(org.bukkit.Location l) {
+    static Vec3d pos(org.bukkit.Location l) {
         return new Vec3d(l.x(), l.y(), l.z());
     }
 
-    private static Rotation rot(Player p) {
+    static Rotation rot(Player p) {
         return rot(p.getLocation());
     }
 
-    private static Rotation rot(org.bukkit.Location l) {
+    static Rotation rot(org.bukkit.Location l) {
         return new Rotation(l.getPitch(), l.getYaw(), l.getYaw());
     }
 
-    private static List<byte[]> equipment(Player p) {
+    static List<byte[]> equipment(Player p) {
         var eq = p.getInventory();
         return List.of(
                 EquipmentRecorder.serializeItem(eq.getItemInMainHand()),

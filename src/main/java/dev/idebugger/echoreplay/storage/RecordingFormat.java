@@ -25,7 +25,6 @@ public final class RecordingFormat {
     public static final int SEC_BLOCK_NBT = 4;
     public static final int SEC_ENTITIES = 5;
     public static final int SEC_TIMELINE = 6;
-    public static final int SEC_MARKERS = 7;
 
     // Timeline event type ids (stable — never reorder).
     public static final int EV_KEEP_ALIVE = 0;
