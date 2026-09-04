@@ -209,6 +209,7 @@ public final class ReplaySession {
         Integer stable = spectateStable.remove(p.getUniqueId());
         SpectateSave save = spectateSave.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        spectateInvSyncTick.remove(p.getUniqueId());
         nyxExempt(p, false);
         unhideSpectator(p);
         if (stable != null) {
@@ -355,6 +356,12 @@ public final class ReplaySession {
     // Spectate driver dedup: last inventory hash applied per spectator (skips
     // identical full-inventory rewrites, which flicker the client).
     private final Map<UUID, Integer> lastAppliedInventoryHash = new HashMap<>();
+    // Interval full-inventory re-sync counter per spectator (ticks since the
+    // last forced full apply). Event-driven applies can drift (equipment
+    // writes land between full snapshots), so the full recorded inventory is
+    // re-applied every SYNC_INTERVAL_TICKS to converge back to truth.
+    private final Map<UUID, Integer> spectateInvSyncTick = new HashMap<>();
+    private static final int SPECTATE_INV_SYNC_INTERVAL = 20;
     // Players currently holding a Nyx anticheat exemption for spectating
     // (toggle-symmetric: exempt once on possess, un-exempt once on release).
     private final Set<UUID> nyxExempted = new HashSet<>();
@@ -600,6 +607,7 @@ public final class ReplaySession {
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
     public boolean stopSpectate(Player p) {
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        spectateInvSyncTick.remove(p.getUniqueId());
         nyxExempt(p, false);
         unhideSpectator(p);
         Integer stable = spectateStable.remove(p.getUniqueId());
@@ -650,6 +658,7 @@ public final class ReplaySession {
             spectateStable.remove(e.getKey());
             SpectateSave save = spectateSave.remove(e.getKey());
             lastAppliedInventoryHash.remove(e.getKey());
+            spectateInvSyncTick.remove(e.getKey());
             Player p = Bukkit.getPlayer(e.getKey());
             nyxExempt(p, false);
             restoreSpectate(p, save);
@@ -759,6 +768,7 @@ public final class ReplaySession {
             spectateStable.remove(id);
             SpectateSave save = spectateSave.remove(id);
             lastAppliedInventoryHash.remove(id);
+            spectateInvSyncTick.remove(id);
             Player rp = Bukkit.getPlayer(id);
             nyxExempt(rp, false);
             unhideSpectator(rp);
@@ -783,6 +793,7 @@ public final class ReplaySession {
                 it.remove();
                 spectateSave.remove(uuid);
                 lastAppliedInventoryHash.remove(uuid);
+                spectateInvSyncTick.remove(uuid);
                 nyxExempted.remove(uuid);
                 continue;
             }
@@ -800,6 +811,15 @@ public final class ReplaySession {
             // (see ReplayManager guards) plus this lock, hits do nothing.
             Vitals v = lastVitalsByStable.get(e.getValue());
             if (v != null) applyVitalsToPlayer(p, v.health(), v.food(), v.saturation());
+            // Interval full-inventory sync: converge back to the recorded
+            // inventory even if incremental applies drifted out of order.
+            int syncTick = spectateInvSyncTick.getOrDefault(uuid, 0) + 1;
+            if (syncTick >= SPECTATE_INV_SYNC_INTERVAL) {
+                spectateInvSyncTick.put(uuid, 0);
+                syncSpectateInventory(p, e.getValue());
+            } else {
+                spectateInvSyncTick.put(uuid, syncTick);
+            }
         }
     }
 
@@ -832,11 +852,20 @@ public final class ReplaySession {
      *  an identical snapshot (full setContents/armor rewrites flicker the
      *  client inventory). */
     private void applyInventoryToPlayer(Player p, byte[][] slots) {
+        applyInventoryToPlayer(p, slots, false);
+    }
+
+    /**
+     * @param force bypass the identical-snapshot skip (interval re-sync).
+     */
+    private void applyInventoryToPlayer(Player p, byte[][] slots, boolean force) {
         if (slots == null) return;
         try {
             int hash = inventoryHash(slots);
-            Integer last = lastAppliedInventoryHash.get(p.getUniqueId());
-            if (last != null && last == hash) return;
+            if (!force) {
+                Integer last = lastAppliedInventoryHash.get(p.getUniqueId());
+                if (last != null && last == hash) return;
+            }
             org.bukkit.inventory.PlayerInventory inv = p.getInventory();
             org.bukkit.inventory.ItemStack[] main = new org.bukkit.inventory.ItemStack[36];
             int n = Math.min(slots.length, 41);
@@ -860,6 +889,20 @@ public final class ReplaySession {
         int h = 1;
         for (byte[] s : slots) h = 31 * h + java.util.Arrays.hashCode(s);
         return h;
+    }
+
+    /** Forced full-inventory convergence for one spectator (interval sync). */
+    private void syncSpectateInventory(Player p, int stable) {
+        byte[][] full = lastInventoryByStable.get(stable);
+        if (full == null) {
+            byte[][] eq = lastEquipmentByStable.get(stable);
+            if (eq == null) return;
+            Integer h = lastHeldSlotByStable.get(stable);
+            full = equipmentAsInventory(eq, h != null ? h : 0);
+        }
+        applyInventoryToPlayer(p, full, true);
+        Integer held = lastHeldSlotByStable.get(stable);
+        if (held != null) applyHeldSlot(p, held);
     }
 
     /** Map a 6-slot equipment array (main/off/boots/legs/chest/helmet) to the 41-slot layout.
@@ -1978,6 +2021,11 @@ public final class ReplaySession {
      *  hotbar slot. */
     private void applyEquipmentSlotToPlayer(Player p, int stableId, int slot, byte[] item) {
         try {
+            // Direct live writes bypass the full-inventory hash, so invalidate
+            // it: the next snapshot apply (or interval sync) must not be
+            // skipped as "already applied".
+            lastAppliedInventoryHash.remove(p.getUniqueId());
+            spectateInvSyncTick.remove(p.getUniqueId());
             var stack = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(item);
             org.bukkit.inventory.PlayerInventory inv = p.getInventory();
             switch (slot) {
