@@ -615,6 +615,7 @@ public final class ReplaySession {
             SpectateSave save = spectateSave.remove(p.getUniqueId());
             restoreSpectate(p, save);
             maybeRespawnSpectatedFake(stable);
+            ensureSeesStable(p, stable);
             return true;
         }
         // Paused (target left the region): stopspectate OVERRIDES the pending
@@ -745,18 +746,56 @@ public final class ReplaySession {
         }
         EntityPose pose = entityPoses.get(stable);
         TimelineEvent.PlayerSpawn spawn = playerSpawnByStable.get(stable);
-        if (pose == null || spawn == null) return; // target died/left — nothing to re-spawn
+        if (spawn == null) {
+            debug("stopspectate: no spawn record for stable " + stable + " — fake not re-spawned");
+            return; // nothing to re-spawn from
+        }
+        if (pose == null) {
+            // Live pose gone (died/left at this exact moment) — anchor on the
+            // spawn record instead of leaving the target invisible.
+            pose = new EntityPose(spawn.pos(), spawn.rot());
+        }
         if (stableToRuntime.containsKey(stable) || fakes.isExhausted()) return;
         int runtime = fakes.allocateId();
         stableToRuntime.put(stable, runtime);
         List<Player> targets = liveViewers();
         for (Player p : targets) {
-            fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
-            recordSpawnedFor(runtime, p);
+            try {
+                fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
+                recordSpawnedFor(runtime, p);
+            } catch (Exception ignored) {
+            }
         }
         byte[][] eq = lastEquipmentByStable.get(stable);
         if (eq != null) sendEquipmentBytes(runtime, eq);
         pushStance(runtime);
+    }
+
+    /**
+     * Safety net after stopspectate: if the target still has no live fake for
+     * whatever reason, queue a personal re-sync so the ex-spectator is
+     * guaranteed to see them again (the manual /er leave + /er watch
+     * workaround, automated). The done-set is pre-seeded with every live
+     * stable so nothing duplicates — only a genuinely missing fake is sent.
+     * Queued at the current index so virtual block history is not re-streamed.
+     */
+    private void ensureSeesStable(Player p, int stable) {
+        if (p == null || !p.isOnline()) return;
+        if (stableToRuntime.containsKey(stable)) return;
+        try {
+            java.util.Set<Integer> done =
+                    syncedStablesFor.computeIfAbsent(p.getUniqueId(), k -> new java.util.HashSet<>());
+            for (Integer st : new java.util.HashSet<>(stableToRuntime.keySet())) done.add(st);
+            pendingSyncs.put(p.getUniqueId(), appliedIndex);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void debug(String msg) {
+        try {
+            EchoReplay.getPlugin(EchoReplay.class).getLogger().fine("[EchoReplay] " + msg);
+        } catch (Exception ignored) {
+        }
     }
 
     /**
