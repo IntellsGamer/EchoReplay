@@ -65,10 +65,17 @@ mvn -DskipTests clean package
 - **`/er spectate <player-name>`** — become that recorded player in
   **first person**: their fake entity is removed and *you* take its place —
   same position, view, health, hunger and full inventory, driven by the
-  recording. `/er stopspectate` (or the target dying/leaving, or playback
-  ending) restores your previous position, items, health and gamemode.
-  Requires a recording made with this version (it records vitals + full
-  inventory).
+  recording. Requires a recording made with this version (it records vitals
+  + full inventory). Spectate is damage-free (recorded health is applied
+  cosmetically, never below 1 HP) and outlives the target's stumbles:
+  - **Target dies** — you stay with them (watch the death, no damage) and
+    snap to their respawn; their fake re-spawns for everyone else.
+  - **Target leaves the region** (or logs out) — you're restored to your
+    own position/items and told so; spectate is *paused*, and you're
+    re-possessed automatically the moment they re-enter the region.
+  - **`/er stopspectate`** — the only hard end: restores you and cancels any
+    pending auto re-possess (it also overrides a paused spectate).
+  Playback ending, seeking, or you logging out also restores you cleanly.
 - Players inside `replay.auto-watch-radius` of the cuboid see the replay
   automatically. Viewers are forced to spectator (`replay.force-spectator`)
   and their gamemode is restored afterwards.

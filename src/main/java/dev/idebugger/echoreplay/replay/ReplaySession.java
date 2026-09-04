@@ -2,6 +2,8 @@ package dev.idebugger.echoreplay.replay;
 
 import dev.idebugger.echoreplay.EchoReplay;
 import dev.idebugger.echoreplay.model.TimelineEvent;
+import dev.idebugger.echoreplay.model.Rotation;
+import dev.idebugger.echoreplay.model.Vec3d;
 import dev.idebugger.echoreplay.select.Cuboid;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
 import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
@@ -202,12 +204,15 @@ public final class ReplaySession {
         // If they were spectating, put their own state back (inventory/vitals
         // are still settable during the quit event — teleport is a no-op then)
         // and hand the place back to the fake for the remaining viewers.
+        // Paused players are already restored — just drop their auto re-possess
+        // (a relog is a fresh session; they spectate manually again).
         Integer stable = spectateStable.remove(p.getUniqueId());
         SpectateSave save = spectateSave.remove(p.getUniqueId());
         if (stable != null) {
             restoreSpectate(p, save);
             maybeRespawnSpectatedFake(stable);
         }
+        for (Set<UUID> set : pausedSpectate.values()) set.remove(p.getUniqueId());
         restoreForcedMode(p);
     }
 
@@ -315,6 +320,10 @@ public final class ReplaySession {
                                 float saturation, org.bukkit.GameMode mode, byte[][] inventory) {}
     private final Map<UUID, Integer> spectateStable = new HashMap<>();
     private final Map<UUID, SpectateSave> spectateSave = new HashMap<>();
+    /** Stable id -> real players PAUSED on it: restored + told the target
+     *  left the region; they are re-possessed automatically on the target's
+     *  next PlayerSpawn (re-entry). Only {@code stopspectate} cancels this. */
+    private final Map<Integer, Set<UUID>> pausedSpectate = new HashMap<>();
     // Live caches so spectating can be started mid-playback with the current
     // recorded state (cleared on entity reset).
     private record Vitals(float health, int food, float saturation) {}
@@ -338,6 +347,15 @@ public final class ReplaySession {
         // Must still be alive (entityPoses is cleared on death/leave).
         if (stable == null || !entityPoses.containsKey(stable)) return false;
         if (spectateStable.containsKey(p.getUniqueId())) return true;
+        return possess(p, stable);
+    }
+
+    /** Take over the recorded player's place. Shared by the command and by
+     *  automatic re-possess when a paused target re-enters the region. */
+    private boolean possess(Player p, int stable) {
+        // Manual spectate also cancels any pending auto re-possess.
+        Set<UUID> pausedHere = pausedSpectate.get(stable);
+        if (pausedHere != null) pausedHere.remove(p.getUniqueId());
         // Cam would fight the spectate driver over the same player's teleports.
         stopCamera(p);
         if (!viewers.contains(p.getUniqueId())) viewers.add(p.getUniqueId());
@@ -385,11 +403,101 @@ public final class ReplaySession {
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
     public boolean stopSpectate(Player p) {
         Integer stable = spectateStable.remove(p.getUniqueId());
-        if (stable == null) return false;
-        SpectateSave save = spectateSave.remove(p.getUniqueId());
-        restoreSpectate(p, save);
-        maybeRespawnSpectatedFake(stable);
-        return true;
+        if (stable != null) {
+            SpectateSave save = spectateSave.remove(p.getUniqueId());
+            restoreSpectate(p, save);
+            maybeRespawnSpectatedFake(stable);
+            return true;
+        }
+        // Paused (target left the region): stopspectate OVERRIDES the pending
+        // auto re-possess.
+        for (var it = pausedSpectate.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<Integer, Set<UUID>> en = it.next();
+            if (en.getValue().remove(p.getUniqueId())) {
+                if (en.getValue().isEmpty()) it.remove();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Tell live spectators their target died — spectate CONTINUES through
+     *  the death (no damage to the real player) and snaps to the respawn. */
+    private void notifySpectatorsOfDeath(int stable) {
+        String name = nameByStable.getOrDefault(stable, "?");
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() != stable) continue;
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p != null && p.isOnline()) {
+                p.sendMessage(Text.mm("<gray>💀 <aqua>" + name + "</aqua> <gray>died — you stay with them. "
+                        + "You'll snap to their respawn."));
+            }
+        }
+    }
+
+    /** Target left the region (or the server): restore every spectator on it
+     *  and park them as paused — they are re-possessed automatically when the
+     *  target's PlayerSpawn arrives again (re-entry). */
+    private void pauseSpectateForStable(int stable) {
+        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
+            if (e.getValue() != stable) continue;
+            spectateStable.remove(e.getKey());
+            SpectateSave save = spectateSave.remove(e.getKey());
+            Player p = Bukkit.getPlayer(e.getKey());
+            restoreSpectate(p, save);
+            pausedSpectate.computeIfAbsent(stable, k -> new HashSet<>()).add(e.getKey());
+            if (p != null && p.isOnline()) {
+                p.sendMessage(Text.mm("<gray>⚠ <aqua>" + nameByStable.getOrDefault(stable, "?")
+                        + "</aqua> <gray>left the region — spectate paused. You'll be re-possessed "
+                        + "when they come back (or <yellow>/er stopspectate</yellow> <gray>to end it)."));
+            }
+        }
+    }
+
+    /** Target re-entered the region: re-possess every paused spectator. */
+    private void repossessPaused(int stable, String spawnName) {
+        Set<UUID> paused = pausedSpectate.remove(stable);
+        if (paused == null || paused.isEmpty()) return;
+        String name = spawnName != null ? spawnName : nameByStable.getOrDefault(stable, "?");
+        for (UUID id : paused) {
+            Player p = Bukkit.getPlayer(id);
+            if (p == null || !p.isOnline() || !viewers.contains(id)) continue;
+            if (possess(p, stable)) {
+                p.sendMessage(Text.mm("<gray>✓ <aqua>" + name + "</aqua> <gray>is back in the region — "
+                        + "spectating again."));
+            }
+        }
+    }
+
+    /** Re-spawn a player's fake after an in-region death+respawn (no new
+     *  PlayerSpawn arrives — poses just resume). Skips the real players who
+     *  currently possess this stable, so they don't see a duplicate self. */
+    private void respawnPlayerAt(int stable, Vec3d pos, Rotation rot) {
+        TimelineEvent.PlayerSpawn spawn = playerSpawnByStable.get(stable);
+        if (spawn == null || stableToRuntime.containsKey(stable)) return;
+        if (fakes.isExhausted()) {
+            warnIdExhausted();
+            return;
+        }
+        int runtime = fakes.allocateId();
+        stableToRuntime.put(stable, runtime);
+        entityPoses.put(stable, new EntityPose(pos, rot));
+        runtimeHeadYaw.put(stable, rot.headYaw());
+        Set<UUID> possessors = new HashSet<>();
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() == stable) possessors.add(e.getKey());
+        }
+        for (Player p : tickViewers) {
+            if (possessors.contains(p.getUniqueId())) continue;
+            fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pos, rot);
+            recordSpawnedFor(runtime, p);
+        }
+        byte[][] eq = lastEquipmentByStable.get(stable);
+        if (eq != null) sendEquipmentBytes(runtime, eq);
+        pushStance(runtime);
+        for (Player p : tickViewers) {
+            fakes.headLook(p, runtime, rot.headYaw());
+        }
     }
 
     /** Put a real player back to their saved state (null-safe, online-checked). */
@@ -432,16 +540,6 @@ public final class ReplaySession {
         pushStance(runtime);
     }
 
-    /** End spectate for everyone attached to this stable (target died/left). */
-    private void endSpectateForStable(int stable) {
-        for (UUID id : new ArrayList<>(spectateStable.keySet())) {
-            if (spectateStable.get(id) != stable) continue;
-            spectateStable.remove(id);
-            SpectateSave save = spectateSave.remove(id);
-            restoreSpectate(Bukkit.getPlayer(id), save);
-        }
-    }
-
     /**
      * Release every spectate (playback stopping or entity reset). No fake
      * re-spawn here: the session is ending or rebuilding its entities anyway.
@@ -452,6 +550,8 @@ public final class ReplaySession {
             SpectateSave save = spectateSave.remove(id);
             restoreSpectate(Bukkit.getPlayer(id), save);
         }
+        // Paused spectators were already restored when paused.
+        pausedSpectate.clear();
     }
 
     /** Teleport every real player to the live recorded pose of their target. */
@@ -465,7 +565,8 @@ public final class ReplaySession {
                 continue;
             }
             EntityPose pose = entityPoses.get(e.getValue());
-            if (pose == null) continue; // target died — endSpectateForStable handles it
+            if (pose == null) continue; // target died / left — stay put;
+                                        // spectate resumes on respawn / re-entry
             try {
                 // Body follows the motion, view follows the recorded head.
                 p.teleport(new org.bukkit.Location(world,
@@ -1283,6 +1384,7 @@ public final class ReplaySession {
             }
             // Also replay equipment for respawned player
             replayPlayerEquipment(existing, s);
+            repossessPaused(s.npcId(), s.name());
             return;
         }
         if (fakes.isExhausted()) {
@@ -1300,6 +1402,8 @@ public final class ReplaySession {
             recordSpawnedFor(runtime, p);
         }
         replayPlayerEquipment(runtime, s);
+        // Re-entry into the region: hand the place back to paused spectators.
+        repossessPaused(s.npcId(), s.name());
     }
 
     private void warnIdExhausted() {
@@ -1391,7 +1495,15 @@ public final class ReplaySession {
         // or the id band was exhausted): first-person drivers read it.
         entityPoses.put(m.npcId(), new EntityPose(m.pos(), m.rot()));
         Integer runtime = stableToRuntime.get(m.npcId());
-        if (runtime == null) return;
+        if (runtime == null) {
+            // A player can respawn in-region after death WITHOUT a new
+            // PlayerSpawn — poses simply resume. Re-spawn the fake so the
+            // scene (and any first-person spectator) stays continuous.
+            if (playerSpawnByStable.containsKey(m.npcId())) {
+                respawnPlayerAt(m.npcId(), m.pos(), m.rot());
+            }
+            return;
+        }
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, m.pos(), m.rot(), m.onGround());
         }
@@ -1401,7 +1513,12 @@ public final class ReplaySession {
     private void onTeleport(TimelineEvent.Teleport t) {
         entityPoses.put(t.npcId(), new EntityPose(t.pos(), t.rot()));
         Integer runtime = stableToRuntime.get(t.npcId());
-        if (runtime == null) return;
+        if (runtime == null) {
+            if (playerSpawnByStable.containsKey(t.npcId())) {
+                respawnPlayerAt(t.npcId(), t.pos(), t.rot());
+            }
+            return;
+        }
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, t.pos(), t.rot(), true);
         }
@@ -1684,20 +1801,26 @@ public final class ReplaySession {
         runtimeHeadYaw.remove(stableId);
         playerSpawnByStable.remove(stableId);
         entitySpawnByStable.remove(stableId);
-        endSpectateForStable(stableId);
+        lastVitalsByStable.remove(stableId);
+        lastInventoryByStable.remove(stableId);
+        lastEquipmentByStable.remove(stableId);
+        // Leaving the region PAUSES spectate (restore + notice, auto
+        // re-possess on re-entry) instead of ending it.
+        pauseSpectateForStable(stableId);
         if (runtime == null) return;
         destroyFor(runtime);
     }
 
-    /** Replay a recorded death: play the death animation, then destroy lazily. */
+    /** Replay a recorded death: play the death animation, then destroy lazily.
+     *  Death does NOT end spectate — the real player stays (harmless, no
+     *  damage) and snaps to the target's respawn; the spawn + state caches
+     *  are kept so onMove can re-spawn the fake when poses resume. */
     private void onDeath(int stableId) {
         Integer runtime = stableToRuntime.remove(stableId);
         entityPoses.remove(stableId);
         runtimeHeadYaw.remove(stableId);
-        nameByStable.remove(stableId);
-        playerSpawnByStable.remove(stableId);
         entitySpawnByStable.remove(stableId);
-        endSpectateForStable(stableId);
+        notifySpectatorsOfDeath(stableId);
         if (runtime == null) return;
         for (Player p : tickViewers) {
             fakes.entityStatus(p, runtime, 3); // death status
