@@ -199,6 +199,11 @@ public final class ReplaySession {
         viewers.remove(p.getUniqueId());
         pendingSyncs.remove(p.getUniqueId());
         syncedStablesFor.remove(p.getUniqueId());
+        // If they were spectating, the fake takes the place back (the player
+        // is offline or leaving the replay, so no state restore is needed).
+        Integer stable = spectateStable.remove(p.getUniqueId());
+        spectateSave.remove(p.getUniqueId());
+        if (stable != null) maybeRespawnSpectatedFake(stable);
         restoreForcedMode(p);
     }
 
@@ -296,6 +301,220 @@ public final class ReplaySession {
         camPrevMode.clear();
     }
 
+    // --- First-person spectate: become a recorded player ------------------
+    // The target's fake entity is destroyed and the REAL player is driven
+    // instead: every tick they are teleported to the recorded pose, and
+    // recorded vitals / inventory / equipment updates are applied to their
+    // real player state. Their own state is saved and restored on
+    // stopspectate (or when playback ends / the target dies or leaves).
+    private record SpectateSave(org.bukkit.Location loc, float health, int food,
+                                float saturation, org.bukkit.GameMode mode, byte[][] inventory) {}
+    private final Map<UUID, Integer> spectateStable = new HashMap<>();
+    private final Map<UUID, SpectateSave> spectateSave = new HashMap<>();
+    // Live caches so spectating can be started mid-playback with the current
+    // recorded state (cleared on entity reset).
+    private record Vitals(float health, int food, float saturation) {}
+    private final Map<Integer, Vitals> lastVitalsByStable = new HashMap<>();
+    private final Map<Integer, byte[][]> lastInventoryByStable = new HashMap<>();
+    private final Map<Integer, byte[][]> lastEquipmentByStable = new HashMap<>();
+
+    /**
+     * Become the recorded player {@code name}: destroys their fake entity and
+     * drives the real player (pose + vitals + inventory) from the recording.
+     * Returns false when no live recorded player has that name.
+     */
+    public boolean startSpectate(Player p, String name) {
+        Integer stable = null;
+        for (Map.Entry<Integer, String> e : nameByStable.entrySet()) {
+            if (e.getValue() != null && e.getValue().equalsIgnoreCase(name)) {
+                stable = e.getKey();
+                break;
+            }
+        }
+        // Must still be alive (entityPoses is cleared on death/leave).
+        if (stable == null || !entityPoses.containsKey(stable)) return false;
+        if (spectateStable.containsKey(p.getUniqueId())) return true;
+        if (!viewers.contains(p.getUniqueId())) viewers.add(p.getUniqueId());
+
+        // Save the player's real state for restoration.
+        org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        spectateSave.put(p.getUniqueId(), new SpectateSave(
+                p.getLocation().clone(), p.getHealth(), p.getFoodLevel(),
+                p.getSaturation(), p.getGameMode(),
+                dev.idebugger.echoreplay.record.EntityTickRecorder.serializeInventory(inv)));
+        spectateStable.put(p.getUniqueId(), stable);
+
+        // Destroy the fake so the real player takes its place.
+        Integer runtime = stableToRuntime.remove(stable);
+        if (runtime != null) destroyFor(runtime);
+
+        // Switch to survival so the held item renders first-person (the
+        // previous mode — often forced spectator — is saved + restored).
+        if (p.getGameMode() != org.bukkit.GameMode.SURVIVAL) {
+            p.setGameMode(org.bukkit.GameMode.SURVIVAL);
+        }
+
+        // Apply the recorded player's current state.
+        EntityPose pose = entityPoses.get(stable);
+        if (pose != null) {
+            try {
+                p.teleport(new org.bukkit.Location(world, pose.pos().x(), pose.pos().y(), pose.pos().z(),
+                        pose.rot().headYaw(), pose.rot().pitch()));
+            } catch (Exception ignored) {}
+        }
+        Vitals vitals = lastVitalsByStable.get(stable);
+        if (vitals != null) {
+            applyVitalsToPlayer(p, vitals.health(), vitals.food(), vitals.saturation());
+        }
+        byte[][] recInv = lastInventoryByStable.get(stable);
+        if (recInv != null) {
+            applyInventoryToPlayer(p, recInv);
+        } else {
+            byte[][] eq = lastEquipmentByStable.get(stable);
+            if (eq != null) applyInventoryToPlayer(p, equipmentAsInventory(eq));
+        }
+        return true;
+    }
+
+    /** Stop spectating: restore the player's saved state and re-spawn the fake. */
+    public boolean stopSpectate(Player p) {
+        Integer stable = spectateStable.remove(p.getUniqueId());
+        if (stable == null) return false;
+        SpectateSave save = spectateSave.remove(p.getUniqueId());
+        restoreSpectate(p, save);
+        maybeRespawnSpectatedFake(stable);
+        return true;
+    }
+
+    /** Put a real player back to their saved state (null-safe, online-checked). */
+    private void restoreSpectate(Player p, SpectateSave save) {
+        if (save == null || p == null || !p.isOnline()) return;
+        try {
+            if (save.inventory() != null) applyInventoryToPlayer(p, save.inventory());
+            p.setFoodLevel(save.food());
+            p.setSaturation(save.saturation());
+            if (p.getGameMode() == org.bukkit.GameMode.SURVIVAL) {
+                p.setGameMode(save.mode());
+            }
+            applyVitalsToPlayer(p, save.health(), save.food(), save.saturation());
+            p.teleport(save.loc());
+        } catch (Exception ignored) {}
+    }
+
+    public boolean isSpectating(Player p) {
+        return spectateStable.containsKey(p.getUniqueId());
+    }
+
+    /** Re-spawn the fake of a spectated stable when nobody spectates it anymore. */
+    private void maybeRespawnSpectatedFake(int stable) {
+        for (Integer s : spectateStable.values()) {
+            if (s.intValue() == stable) return; // another real player still spectates it
+        }
+        EntityPose pose = entityPoses.get(stable);
+        TimelineEvent.PlayerSpawn spawn = playerSpawnByStable.get(stable);
+        if (pose == null || spawn == null) return; // target died/left — nothing to re-spawn
+        if (stableToRuntime.containsKey(stable) || fakes.isExhausted()) return;
+        int runtime = fakes.allocateId();
+        stableToRuntime.put(stable, runtime);
+        List<Player> targets = liveViewers();
+        for (Player p : targets) {
+            fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
+            recordSpawnedFor(runtime, p);
+        }
+        byte[][] eq = lastEquipmentByStable.get(stable);
+        if (eq != null) sendEquipmentBytes(runtime, eq);
+        pushStance(runtime);
+    }
+
+    /** End spectate for everyone attached to this stable (target died/left). */
+    private void endSpectateForStable(int stable) {
+        for (UUID id : new ArrayList<>(spectateStable.keySet())) {
+            if (spectateStable.get(id) != stable) continue;
+            spectateStable.remove(id);
+            SpectateSave save = spectateSave.remove(id);
+            restoreSpectate(Bukkit.getPlayer(id), save);
+        }
+    }
+
+    /**
+     * Release every spectate (playback stopping or entity reset). No fake
+     * re-spawn here: the session is ending or rebuilding its entities anyway.
+     */
+    private void releaseSpectates() {
+        for (UUID id : new ArrayList<>(spectateStable.keySet())) {
+            spectateStable.remove(id);
+            SpectateSave save = spectateSave.remove(id);
+            restoreSpectate(Bukkit.getPlayer(id), save);
+        }
+    }
+
+    /** Teleport every real player to the live recorded pose of their target. */
+    private void driveSpectators() {
+        if (spectateStable.isEmpty()) return;
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p == null || !p.isOnline()) {
+                spectateStable.remove(e.getKey());
+                spectateSave.remove(e.getKey());
+                continue;
+            }
+            EntityPose pose = entityPoses.get(e.getValue());
+            if (pose == null) continue; // target died — endSpectateForStable handles it
+            try {
+                // Body follows the motion, view follows the recorded head.
+                p.teleport(new org.bukkit.Location(world,
+                        pose.pos().x(), pose.pos().y(), pose.pos().z(),
+                        pose.rot().headYaw(), pose.rot().pitch()));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /** Cosmetic vitals: never actually hurts (clamped above lethal). */
+    private void applyVitalsToPlayer(Player p, float health, int food, float saturation) {
+        try {
+            float h = Math.max(1.0f, Math.min(health, p.getMaxHealth()));
+            p.setHealth(h);
+            p.setFoodLevel(Math.max(0, Math.min(20, food)));
+            p.setSaturation(Math.max(0f, Math.min(20f, saturation)));
+        } catch (Exception ignored) {}
+    }
+
+    /** Apply a 41-slot recorded inventory to a real player. */
+    private void applyInventoryToPlayer(Player p, byte[][] slots) {
+        if (slots == null) return;
+        try {
+            org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+            org.bukkit.ItemStack[] main = new org.bukkit.ItemStack[36];
+            int n = Math.min(slots.length, 41);
+            for (int i = 0; i < 36 && i < n; i++) {
+                main[i] = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[i]);
+            }
+            inv.setContents(main);
+            if (n > 40) {
+                inv.setArmorContents(new org.bukkit.ItemStack[]{
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[36]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[37]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[38]),
+                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[39])});
+                inv.setItemInOffHand(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[40]));
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Map a 6-slot equipment array (main/off/boots/legs/chest/helmet) to the 41-slot layout. */
+    private static byte[][] equipmentAsInventory(byte[][] eq) {
+        byte[][] out = new byte[41][];
+        for (int i = 0; i < 41; i++) out[i] = new byte[0];
+        if (eq == null) return out;
+        if (eq.length > 0 && eq[0] != null) out[0] = eq[0];        // main hand -> hotbar slot 0
+        if (eq.length > 1 && eq[1] != null) out[40] = eq[1];       // offhand
+        if (eq.length > 2 && eq[2] != null) out[36] = eq[2];       // boots
+        if (eq.length > 3 && eq[3] != null) out[37] = eq[3];       // leggings
+        if (eq.length > 4 && eq[4] != null) out[38] = eq[4];       // chestplate
+        if (eq.length > 5 && eq[5] != null) out[39] = eq[5];       // helmet
+        return out;
+    }
+
     /** Parsed BlockData for a palette index, parsed once then cached. */
     private BlockData blockDataFor(int pi) {
         return parsedFor(blockDataCache, palette, pi);
@@ -388,7 +607,10 @@ public final class ReplaySession {
                 if (stopping) return false;
                 tickDeaths();
                 drainViewerSyncs();
-                if (!clock.paused()) driveCameras();
+                if (!clock.paused()) {
+                    driveCameras();
+                    driveSpectators();
+                }
                 double media = clock.tick();
                 while (appliedIndex < timeline.size() && timeline.get(appliedIndex).tickMillis() <= media) {
                     TimelineEvent ev = timeline.get(appliedIndex);
@@ -647,6 +869,7 @@ public final class ReplaySession {
     private void beginStopPhase() {
         stopping = true;
         pendingSyncs.clear();
+        releaseSpectates();
         releaseCameras();
         // Restore any viewers we switched to spectator.
         for (Map.Entry<UUID, org.bukkit.GameMode> fm : forcedModes.entrySet()) {
@@ -697,6 +920,10 @@ public final class ReplaySession {
         dyingRuntimes.clear();
         playerSpawnByStable.clear();
         entitySpawnByStable.clear();
+        lastVitalsByStable.clear();
+        lastInventoryByStable.clear();
+        lastEquipmentByStable.clear();
+        releaseSpectates();
         pendingSyncs.replaceAll((k, v) -> 0);
         syncedStablesFor.clear();
     }
@@ -935,8 +1162,35 @@ public final class ReplaySession {
             case TimelineEvent.Explosion e -> onExplosion(e);
             case TimelineEvent.EntityStatus s -> onEntityStatus(s);
             case TimelineEvent.WorldTime w -> onWorldTime(w);
+            case TimelineEvent.PlayerVitals v -> onPlayerVitals(v);
+            case TimelineEvent.PlayerInventory v -> onPlayerInventory(v);
             default -> {}
         }
+    }
+
+    /** Record vitals; apply to a real player who is spectating this npc. */
+    private void onPlayerVitals(TimelineEvent.PlayerVitals v) {
+        lastVitalsByStable.put(v.npcId(), new Vitals(v.health(), v.foodLevel(), v.saturation()));
+        Player sp = spectatorOf(v.npcId());
+        if (sp != null) applyVitalsToPlayer(sp, v.health(), v.foodLevel(), v.saturation());
+    }
+
+    /** Record the full inventory; apply to a real player who is spectating this npc. */
+    private void onPlayerInventory(TimelineEvent.PlayerInventory v) {
+        lastInventoryByStable.put(v.npcId(), v.slots());
+        Player sp = spectatorOf(v.npcId());
+        if (sp != null) applyInventoryToPlayer(sp, v.slots());
+    }
+
+    /** The first online real player spectating this stable, or null. */
+    private Player spectatorOf(int stableId) {
+        for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
+            if (e.getValue() == stableId) {
+                Player p = Bukkit.getPlayer(e.getKey());
+                if (p != null && p.isOnline()) return p;
+            }
+        }
+        return null;
     }
 
     /** Drive the real world's time-of-day from the recording (world mode only). */
@@ -1012,6 +1266,9 @@ public final class ReplaySession {
     /** Replay a player spawn/respawn (including KeepInventory armor and equipment). */
     private void onPlayerSpawn(TimelineEvent.PlayerSpawn s) {
         playerSpawnByStable.put(s.npcId(), s);
+        byte[][] eq = s.equipment() != null
+                ? s.equipment().toArray(new byte[0][]) : null;
+        lastEquipmentByStable.put(s.npcId(), eq != null ? eq : new byte[6][]);
         Integer existing = stableToRuntime.get(s.npcId());
         if (existing != null) {
             entityPoses.put(s.npcId(), new EntityPose(s.pos(), s.rot()));
@@ -1124,9 +1381,11 @@ public final class ReplaySession {
     }
 
     private void onMove(TimelineEvent.Move m) {
+        // Pose is recorded even when no fake exists (spectate destroyed it,
+        // or the id band was exhausted): first-person drivers read it.
+        entityPoses.put(m.npcId(), new EntityPose(m.pos(), m.rot()));
         Integer runtime = stableToRuntime.get(m.npcId());
         if (runtime == null) return;
-        entityPoses.put(m.npcId(), new EntityPose(m.pos(), m.rot()));
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, m.pos(), m.rot(), m.onGround());
         }
@@ -1134,9 +1393,9 @@ public final class ReplaySession {
     }
 
     private void onTeleport(TimelineEvent.Teleport t) {
+        entityPoses.put(t.npcId(), new EntityPose(t.pos(), t.rot()));
         Integer runtime = stableToRuntime.get(t.npcId());
         if (runtime == null) return;
-        entityPoses.put(t.npcId(), new EntityPose(t.pos(), t.rot()));
         for (Player p : tickViewers) {
             fakes.positionSync(p, runtime, t.pos(), t.rot(), true);
         }
@@ -1202,6 +1461,22 @@ public final class ReplaySession {
     }
 
     private void onEquipment(TimelineEvent.Equipment eq) {
+        // Cache the live 6-slot equipment so spectating can start mid-play
+        // with the correct gear and fake re-spawns stay accurate.
+        byte[][] cached = lastEquipmentByStable.get(eq.npcId());
+        if (cached == null) {
+            cached = new byte[6][];
+            for (int i = 0; i < 6; i++) cached[i] = new byte[0];
+            lastEquipmentByStable.put(eq.npcId(), cached);
+        }
+        if (eq.slot() >= 0 && eq.slot() < 6) cached[eq.slot()] = eq.item();
+
+        // First-person spectate: the gear change lands in the real hotbar.
+        Player sp = spectatorOf(eq.npcId());
+        if (sp != null) {
+            applyEquipmentSlotToPlayer(sp, eq.slot(), eq.item());
+        }
+
         Integer runtime = stableToRuntime.get(eq.npcId());
         if (runtime == null) return;
         var item = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(eq.item());
@@ -1221,6 +1496,52 @@ public final class ReplaySession {
         for (Player p : tickViewers) {
             com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
                     .sendPacket(p, eqPacket);
+        }
+    }
+
+    /** Apply one recorded equipment slot (0-5) to a real player's inventory. */
+    private void applyEquipmentSlotToPlayer(Player p, int slot, byte[] item) {
+        try {
+            var stack = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(item);
+            org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+            switch (slot) {
+                case 0 -> inv.setItemInMainHand(stack);
+                case 1 -> inv.setItemInOffHand(stack);
+                default -> {
+                    org.bukkit.ItemStack[] armor = inv.getArmorContents();
+                    org.bukkit.ItemStack[] a = armor != null ? armor.clone() : new org.bukkit.ItemStack[4];
+                    int ai = slot - 2; // 2=boots 3=legs 4=chest 5=helmet
+                    if (ai >= 0 && ai < 4) {
+                        a[ai] = stack;
+                        inv.setArmorContents(a);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** Send all six cached equipment slots of a (re-)spawned fake to viewers. */
+    private void sendEquipmentBytes(int runtime, byte[][] eq) {
+        for (int i = 0; i < eq.length && i < 6; i++) {
+            if (eq[i] == null || eq[i].length == 0) continue;
+            var item = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(eq[i]);
+            if (item.isEmpty()) continue;
+            var peItem = io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitItemStack(item);
+            com.github.retrooper.packetevents.protocol.player.EquipmentSlot peSlot = switch (i) {
+                case 0 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND;
+                case 1 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND;
+                case 2 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS;
+                case 3 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS;
+                case 4 -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE;
+                default -> com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET;
+            };
+            var eqPacket = new com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment(
+                    runtime, java.util.List.of(
+                            new com.github.retrooper.packetevents.protocol.player.Equipment(peSlot, peItem)));
+            for (Player p : tickViewers) {
+                com.github.retrooper.packetevents.PacketEvents.getAPI().getPlayerManager()
+                        .sendPacket(p, eqPacket);
+            }
         }
     }
 
@@ -1357,6 +1678,7 @@ public final class ReplaySession {
         runtimeHeadYaw.remove(stableId);
         playerSpawnByStable.remove(stableId);
         entitySpawnByStable.remove(stableId);
+        endSpectateForStable(stableId);
         if (runtime == null) return;
         destroyFor(runtime);
     }
@@ -1369,6 +1691,7 @@ public final class ReplaySession {
         nameByStable.remove(stableId);
         playerSpawnByStable.remove(stableId);
         entitySpawnByStable.remove(stableId);
+        endSpectateForStable(stableId);
         if (runtime == null) return;
         for (Player p : tickViewers) {
             fakes.entityStatus(p, runtime, 3); // death status

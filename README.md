@@ -62,6 +62,13 @@ mvn -DskipTests clean package
 - `/er watch` — join the running replay (state sync: entity snapshot + past
   block changes in virtual mode); `/er leave` to drop out
 - `/er cam <entity-name|off>` — spectator-follow a recorded entity
+- **`/er spectate <player-name>`** — become that recorded player in
+  **first person**: their fake entity is removed and *you* take its place —
+  same position, view, health, hunger and full inventory, driven by the
+  recording. `/er stopspectate` (or the target dying/leaving, or playback
+  ending) restores your previous position, items, health and gamemode.
+  Requires a recording made with this version (it records vitals + full
+  inventory).
 - Players inside `replay.auto-watch-radius` of the cuboid see the replay
   automatically. Viewers are forced to spectator (`replay.force-spectator`)
   and their gamemode is restored afterwards.
@@ -80,7 +87,7 @@ mvn -DskipTests clean package
 | `echoreplay.wand` | op | `wand` |
 | `echoreplay.select` | op | `pos1`, `pos2`, `select`, `expand`, `contract`, `shift` |
 | `echoreplay.record` | op | `record`, `stop`, `save`, `cancel`, `marker` |
-| `echoreplay.play` | op | `play`, `watch` (also required for auto-watch) |
+| `echoreplay.play` | op | `play`, `watch` (also required for auto-watch), `spectate`, `stopspectate` |
 | `echoreplay.control` | op | `pause`, `resume`, `speed`, `seek`, `ff`, `rewind`, `stopplay`, `leave` |
 | `echoreplay.delete` | op | `delete`, `rename`, `confirm` |
 | `echoreplay.border` | true | `border` |
@@ -93,7 +100,9 @@ mvn -DskipTests clean package
   `recording.snapshot.blocks-per-tick`).
 - **Event recorders** — block place/break/fluid/redstone/sign/explosion,
   entity join/leave/move/death, player equipment & sneak/sprint, chat, damage,
-  fireworks, world time, teleports.
+  fireworks, world time, teleports, plus per-player **vitals** (health/hunger/
+  saturation) and **full-inventory** snapshots (both on change) that power
+  first-person spectate.
 - **Region diff** — a background thread rescans the *entire* cuboid on NMS
   chunk reads (`recording.scan-interval-ticks`, budget
   `recording.scan-ms-per-pass`) so even eventless changes (end crystals,

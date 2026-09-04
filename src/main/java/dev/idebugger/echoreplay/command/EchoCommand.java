@@ -103,6 +103,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "leave" -> leave(sender);
             case "watch" -> watch(sender);
             case "cam" -> cam(sender, args);
+            case "spectate" -> spectate(sender, args);
+            case "stopspectate" -> stopspectate(sender);
             case "list" -> list(sender);
             case "info" -> info(sender, args);
             case "delete" -> delete(sender, args);
@@ -131,6 +133,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>Selection:</gray> <yellow>/er wand, pos1, pos2, select, expand, contract, shift, selinfo, clear</yellow>
             <gray>Record:</gray> <yellow>/er record <name>, stop, cancel, save, status, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
+            <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
             """));
@@ -468,6 +471,44 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         });
     }
 
+    private void spectate(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.play")) return;
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            if (args.length < 2) {
+                s.sendMessage(Text.mm("<red>Usage: /er spectate <player-name></red>"));
+                return;
+            }
+            if (rep.startSpectate(p, args[1])) {
+                s.sendMessage(Text.mm("<green>You are now spectating '<aqua>" + args[1]
+                        + "</aqua>' in first person. <gray>Type /er stopspectate to leave.</gray>"));
+            } else {
+                s.sendMessage(Text.mm("<red>Recorded player '" + args[1]
+                        + "' is not alive in the replay right now.</red>"));
+            }
+        });
+    }
+
+    private void stopspectate(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.play")) return;
+        ReplaySession rep = plugin.replayManager().session();
+        if (rep == null) {
+            s.sendMessage(Text.mm("<red>No replay playing.</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            if (rep.stopSpectate(p)) {
+                s.sendMessage(Text.mm("<green>Spectate ended — your previous state was restored.</green>"));
+            } else {
+                s.sendMessage(Text.mm("<gray>You are not spectating anyone.</gray>"));
+            }
+        });
+    }
+
     private void list(CommandSender s) {
         if (!checkPerm(s, "echoreplay.use")) return;
         var entries = plugin.recordingIndex().all();
@@ -654,8 +695,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "stop", "cancel", "save", "status", "play", "pause", "resume",
-                "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "list", "info",
-                "delete", "rename", "confirm", "marker", "border");
+                "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "spectate",
+                "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
             for (String s : subs) if (s.startsWith(args[0].toLowerCase())) out.add(s);
@@ -673,11 +714,13 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             return Arrays.asList("on", "off", "toggle", "status").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }
-        if (args.length == 2 && args[0].equalsIgnoreCase("cam")) {
+        if (args.length == 2 && (args[0].equalsIgnoreCase("cam") || args[0].equalsIgnoreCase("spectate"))) {
             var rep = plugin.replayManager().session();
             if (rep != null) {
                 List<String> out = new ArrayList<>();
-                if ("off".startsWith(args[1].toLowerCase())) out.add("off");
+                if (args[0].equalsIgnoreCase("cam") && "off".startsWith(args[1].toLowerCase())) {
+                    out.add("off");
+                }
                 for (String n : rep.liveEntityNames()) {
                     if (n.toLowerCase().startsWith(args[1].toLowerCase())) out.add(n);
                 }

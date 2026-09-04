@@ -53,4 +53,13 @@ public sealed interface TimelineEvent
     record CustomName(long tickMillis, int npcId, String componentJson) implements TimelineEvent {}
     record Marker(long tickMillis, String name) implements TimelineEvent {}
     record EntityStatus(long tickMillis, int npcId, byte status) implements TimelineEvent {}
+    /** Recorded player vitals (first-person spectate): health, food level, saturation. */
+    record PlayerVitals(long tickMillis, int npcId, float health, int foodLevel, float saturation) implements TimelineEvent {}
+    /**
+     * Full recorded player inventory for first-person spectate.
+     * Slot layout: [0..35] main inventory (getContents order),
+     * [36] boots, [37] leggings, [38] chestplate, [39] helmet, [40] offhand.
+     * Each entry is an ItemStack NBT blob (empty = air).
+     */
+    record PlayerInventory(long tickMillis, int npcId, byte[][] slots) implements TimelineEvent {}
 }

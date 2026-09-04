@@ -123,6 +123,15 @@ sorted by `tickMillis` before playback).
 | 27 | CUSTOM_NAME | `i32 npcId, string componentJson` |
 | 28 | MARKER | `string name` |
 | 29 | ENTITY_STATUS | `i32 npcId, u8 status` |
+| 30 | PLAYER_VITALS | `i32 npcId, f32 health, i8 foodLevel, f32 saturation` |
+| 31 | PLAYER_INVENTORY | `i32 npcId, u16 slotCount (41)`, `slotCount × {i32 len, u8 bytes[len]}` (ItemStack NBT; empty = air) |
+
+`PLAYER_INVENTORY` slot layout: `[0..35]` main inventory (`getContents`
+order, hotbar first), `[36]` boots, `[37]` leggings, `[38]` chestplate,
+`[39]` helmet, `[40]` offhand. `PLAYER_VITALS` and `PLAYER_INVENTORY` are
+only replayed onto a real player while they are first-person spectating that
+recorded player (`/er spectate`); fakes ignore them. Recordings created with
+older plugin versions simply do not contain these events.
 
 `npcId` values are session-local opaque integers assigned in first-seen order.
 

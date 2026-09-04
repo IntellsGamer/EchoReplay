@@ -57,4 +57,6 @@ public final class RecordingFormat {
     public static final int EV_CUSTOM_NAME = 27;
     public static final int EV_MARKER = 28;
     public static final int EV_ENTITY_STATUS = 29;
+    public static final int EV_PLAYER_VITALS = 30;
+    public static final int EV_PLAYER_INVENTORY = 31;
 }
