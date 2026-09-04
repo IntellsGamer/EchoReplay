@@ -525,6 +525,7 @@ public final class ReplaySession {
     /** Tell live spectators their target died — spectate CONTINUES through
      *  the death (no damage to the real player) and snaps to the respawn. */
     private void notifySpectatorsOfDeath(int stable) {
+        if (silentApply) return; // seek catchup: no per-death chat spam for the span
         String name = nameByStable.getOrDefault(stable, "?");
         for (Map.Entry<UUID, Integer> e : spectateStable.entrySet()) {
             if (e.getValue() != stable) continue;
@@ -540,7 +541,11 @@ public final class ReplaySession {
      *  and park them as paused — they are re-possessed automatically when the
      *  target's PlayerSpawn arrives again (re-entry). */
     private void pauseSpectateForStable(int stable) {
-        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
+        // During seek catchup, leaves/spawns churn by the thousand: hold
+        // spectators frozen (driver skips null poses) instead of restoring
+        // + re-possessing with chat spam for every transient event.
+        // reconcileSpectatedFakes settles genuinely-gone targets afterwards.
+        if (silentApply) return;        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
             if (e.getValue() != stable) continue;
             spectateStable.remove(e.getKey());
             SpectateSave save = spectateSave.remove(e.getKey());
@@ -557,8 +562,7 @@ public final class ReplaySession {
     }
 
     /** Target re-entered the region: re-possess every paused spectator. */
-    private void repossessPaused(int stable, String spawnName) {
-        Set<UUID> paused = pausedSpectate.remove(stable);
+    private void repossessPaused(int stable, String spawnName) {        Set<UUID> paused = pausedSpectate.remove(stable);
         if (paused == null || paused.isEmpty()) return;
         String name = spawnName != null ? spawnName : nameByStable.getOrDefault(stable, "?");
         for (UUID id : paused) {
@@ -1182,9 +1186,34 @@ public final class ReplaySession {
         lastEquipmentByStable.clear();
         lastGameModeByStable.clear();
         lastHeldSlotByStable.clear();
-        releaseSpectates();
+        // NOTE: spectate/cam maps intentionally survive entity rebuilds
+        // (seek/ff/rewind): spectators keep their saved state and resume
+        // driving once poses rebuild (see reconcileSpectatedFakes). Only a
+        // true stop (beginStopPhase) releases them.
         pendingSyncs.replaceAll((k, v) -> 0);
         syncedStablesFor.clear();
+    }
+
+    /** After an entity rebuild (seek), take over rebuilt fakes for live
+     *  spectators and park the ones whose target is genuinely gone. Only
+     *  online spectators take over — offline entries are pruned by the
+     *  driver, and their fakes must stay visible to everyone else. */
+    private void reconcileSpectatedFakes() {
+        if (spectateStable.isEmpty()) return;
+        for (Map.Entry<UUID, Integer> e : new ArrayList<>(spectateStable.entrySet())) {
+            Player p = Bukkit.getPlayer(e.getKey());
+            if (p == null || !p.isOnline()) continue;
+            int stable = e.getValue();
+            Integer runtime = stableToRuntime.remove(stable);
+            if (runtime != null) destroyFor(runtime);
+            // Target has no live pose and no spawn record at the seek target:
+            // park as paused (notice + auto re-possess) instead of freezing.
+            if (!entityPoses.containsKey(stable)
+                    && !playerSpawnByStable.containsKey(stable)
+                    && !entitySpawnByStable.containsKey(stable)) {
+                pauseSpectateForStable(stable);
+            }
+        }
     }
 
     /** Apply t=0 entity spawns after a snapshot reset. */
@@ -1290,6 +1319,7 @@ public final class ReplaySession {
         if (catchupTargetMs >= 0) {
             phase = Phase.CATCHUP;
         } else {
+            reconcileSpectatedFakes();
             phase = Phase.RUN;
             if (!seekWasPaused) clock.resume();
             seekWasPaused = false;
@@ -1315,6 +1345,7 @@ public final class ReplaySession {
         silentApply = false;
         catchupTargetMs = -1;
         clock.seekTo(target);
+        reconcileSpectatedFakes();
         phase = Phase.RUN;
         if (!seekWasPaused) clock.resume();
         seekWasPaused = false;
