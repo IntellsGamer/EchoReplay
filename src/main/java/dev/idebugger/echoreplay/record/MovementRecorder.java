@@ -120,21 +120,19 @@ public final class MovementRecorder extends PacketListenerAbstract {
 
         LastMove prev = lastSent.get(uuid);
         float bodyYaw;
-        if (!wantRot && prev != null) {
-            bodyYaw = prev.bodyYaw(); // rotation-only: body unchanged
-        } else if (prev == null) {
+        if (prev == null) {
             bodyYaw = yaw;
         } else {
+            // Body always resolves: toward motion when moving (strafe turns
+            // the torso into the run direction), toward look when stationary
+            // (vanilla standing turns). Every branch must set it — leaving a
+            // stale value freezes the torso while the head keeps turning.
             double dx = x - prev.x(), dz = z - prev.z();
             if (dx * dx + dz * dz > MOTION_EPS_SQ) {
                 // Minecraft yaw convention: 0 = +Z, 90 = -X.
                 double motion = Math.toDegrees(Math.atan2(-dx, dz));
                 bodyYaw = smoothYaw(prev.bodyYaw(), (float) motion, BODY_SMOOTH);
             } else {
-                // Stationary (look-around): the body faces the look direction,
-                // like vanilla standing turns and like 1.0.14 recorded it.
-                // Keeping the stale body yaw here freezes the torso while the
-                // head spins 180, which replays as a detached head.
                 bodyYaw = yaw;
             }
         }
