@@ -389,8 +389,26 @@ public final class ReplaySession {
         if (runtime != null) destroyFor(runtime);
 
         // Mirror the recorded player's gamemode (saved + restored on stop).
-        // Falls back to survival so the held item renders first-person.
-        org.bukkit.GameMode recMode = recordedMode(stable);
+        // State is read from the timeline itself, not just the applied-event
+        // caches: spectating right after /er play (clock ~0, nothing applied
+        // yet) must still see creative, not the survival fallback. When the
+        // recording carries no gamemode at all, keep the player's own mode.
+        Integer recModeVal = recordedModeValue(stable);
+        org.bukkit.GameMode recMode;
+        if (recModeVal != null && recModeVal >= 0 && recModeVal <= 3) {
+            org.bukkit.GameMode gm = null;
+            try {
+                gm = org.bukkit.GameMode.getByValue(recModeVal);
+            } catch (Exception ignored) {
+            }
+            // Falls back to survival only for unknown values; every real mode
+            // (survival/creative/adventure/spectator) mirrors as-is.
+            recMode = gm != null ? gm : org.bukkit.GameMode.SURVIVAL;
+        } else if (recModeVal != null) {
+            recMode = org.bukkit.GameMode.SURVIVAL;
+        } else {
+            recMode = p.getGameMode();
+        }
         if (p.getGameMode() != recMode) {
             try {
                 p.setGameMode(recMode);
@@ -416,21 +434,52 @@ public final class ReplaySession {
         } else {
             byte[][] eq = lastEquipmentByStable.get(stable);
             if (eq != null) {
-                Integer heldNow = lastHeldSlotByStable.get(stable);
+                Integer heldNow = recordedHeldSlot(stable);
                 applyInventoryToPlayer(p, equipmentAsInventory(eq, heldNow != null ? heldNow : 0));
             }
         }
-        Integer held = lastHeldSlotByStable.get(stable);
+        Integer held = recordedHeldSlot(stable);
         if (held != null) {
             applyHeldSlot(p, held);
         }
         return true;
     }
 
-    /** Recorded gamemode for a stable, defaulting to survival for old recordings. */
-    private static org.bukkit.GameMode recordedMode(int stable, Map<Integer, Integer> cache) {
-        Integer m = cache.get(stable);
-        if (m != null) {
+    /** Latest recorded gamemode value for a stable at or before the current
+     *  playback position. Reads the applied-event cache first, then scans the
+     *  already-passed timeline so spectating mid-playback (or right at the
+     *  start) still mirrors correctly. Null when the recording has none. */
+    private Integer recordedModeValue(int stable) {
+        Integer cached = lastGameModeByStable.get(stable);
+        if (cached != null) return cached;
+        Integer found = null;
+        for (int i = 0; i < appliedIndex && i < timeline.size(); i++) {
+            TimelineEvent ev = timeline.get(i);
+            if (ev instanceof TimelineEvent.GameMode g && g.npcId() == stable) found = g.mode();
+        }
+        if (found != null) lastGameModeByStable.put(stable, found);
+        return found;
+    }
+
+    /** Latest recorded held slot for a stable at or before the current
+     *  playback position (same backfill as gamemode). */
+    private Integer recordedHeldSlot(int stable) {
+        Integer cached = lastHeldSlotByStable.get(stable);
+        if (cached != null) return cached;
+        Integer found = null;
+        for (int i = 0; i < appliedIndex && i < timeline.size(); i++) {
+            TimelineEvent ev = timeline.get(i);
+            if (ev instanceof TimelineEvent.HeldSlot h && h.npcId() == stable) found = h.slot();
+        }
+        if (found != null) lastHeldSlotByStable.put(stable, found);
+        return found;
+    }
+
+    /** Recorded gamemode for event-time application (cache only; the event
+     *  itself is the latest truth at that point). */
+    private org.bukkit.GameMode recordedMode(int stable) {
+        Integer m = lastGameModeByStable.get(stable);
+        if (m != null && m >= 0 && m <= 3) {
             try {
                 org.bukkit.GameMode gm = org.bukkit.GameMode.getByValue(m);
                 if (gm != null) return gm;
@@ -438,10 +487,6 @@ public final class ReplaySession {
             }
         }
         return org.bukkit.GameMode.SURVIVAL;
-    }
-
-    private org.bukkit.GameMode recordedMode(int stable) {
-        return recordedMode(stable, lastGameModeByStable);
     }
 
     /** Apply a recorded held hotbar slot (0-8) to a spectating player. */
