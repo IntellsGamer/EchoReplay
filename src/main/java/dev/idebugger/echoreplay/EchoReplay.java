@@ -51,6 +51,11 @@ public final class EchoReplay extends JavaPlugin {
      * Bring old configs forward: back up, fill in missing keys from bundled
      * defaults, and flip keys whose default changed (with a warning naming
      * the old behavior). Never deletes user values.
+     *
+     * <p>Missing-key reconciliation runs on EVERY enable — not just version
+     * bumps — so a file that claims the current version but lacks keys (hand
+     * edits, failed runs) heals instead of being stuck forever. The file is
+     * only rewritten when something actually changed.
      */
     private void migrateConfig() {
         File f = new File(getDataFolder(), "config.yml");
@@ -61,51 +66,72 @@ public final class EchoReplay extends JavaPlugin {
             v = live.getInt("config-version", 0);
         } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
-        if (v >= CONFIG_VERSION) return;
-        try {
-            java.nio.file.Files.copy(f.toPath(),
-                    new File(getDataFolder(), "config.yml.bak").toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
-        }
-        int added = 0;
-        try (java.io.InputStream in = getResource("config.yml")) {
-            if (in != null) {
-                org.bukkit.configuration.file.YamlConfiguration bundled =
-                        org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(
-                                new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
-                for (String key : bundled.getKeys(true)) {
-                    if (bundled.isConfigurationSection(key)) continue;
-                    if (!live.contains(key)) {
-                        live.set(key, bundled.get(key));
-                        added++;
-                    }
+        int added = fillMissingKeys(live);
+        boolean changed = added > 0;
+        java.util.List<String> flipped = new java.util.ArrayList<>();
+        if (v < CONFIG_VERSION) {
+            try {
+                java.nio.file.Files.copy(f.toPath(),
+                        new File(getDataFolder(), "config.yml.bak").toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+            }
+            if (v < 2) {
+                // v2 defaults: play no longer forces spectator; checkpoints are
+                // deleted right after save. Only flip values still sitting on the
+                // v1 default (true) — explicit false stays false silently.
+                if (live.getBoolean("replay.force-spectator", false)) {
+                    live.set("replay.force-spectator", false);
+                    flipped.add("replay.force-spectator=true->false (set it back to true for forced spectator)");
+                }
+                if (live.getBoolean("storage.keep-partial-on-crash", false)) {
+                    live.set("storage.keep-partial-on-crash", false);
+                    flipped.add("storage.keep-partial-on-crash=true->false (set it back to true to keep .partial files)");
                 }
             }
-        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
+            live.set("config-version", CONFIG_VERSION);
+            changed = true;
+            getLogger().info("Migrated config.yml v" + v + " -> v" + CONFIG_VERSION
+                    + " (backup: config.yml.bak, new keys added: " + added
+                    + (flipped.isEmpty() ? "" : ", defaults flipped: " + String.join("; ", flipped)) + ").");
+        } else if (changed) {
+            getLogger().info("Added " + added + " missing keys to config.yml from defaults (version already v"
+                    + CONFIG_VERSION + ").");
         }
-        java.util.List<String> flipped = new java.util.ArrayList<>();
-        if (v < 2) {
-            // v2 defaults: play no longer forces spectator; checkpoints are
-            // deleted right after save. Only flip values still sitting on the
-            // v1 default (true) — explicit false stays false silently.
-            if (live.getBoolean("replay.force-spectator", false)) {
-                live.set("replay.force-spectator", false);
-                flipped.add("replay.force-spectator=true->false (set it back to true for forced spectator)");
+        if (changed) {
+            try {
+                live.save(f);
+            } catch (Exception e) {
+                getLogger().warning("Could not save migrated config.yml: " + e.getMessage());
             }
-            if (live.getBoolean("storage.keep-partial-on-crash", false)) {
-                live.set("storage.keep-partial-on-crash", false);
-                flipped.add("storage.keep-partial-on-crash=true->false (set it back to true to keep .partial files)");
+        }
+    }
+
+    /**
+     * Copy every key present in the bundled defaults but absent from the live
+     * file. Never touches existing values. Returns the number of keys added.
+     */
+    private int fillMissingKeys(FileConfiguration live) {
+        int added = 0;
+        try (java.io.InputStream in = getResource("config.yml")) {
+            if (in == null) {
+                getLogger().warning("Bundled config.yml missing from jar — cannot reconcile defaults.");
+                return 0;
             }
+            org.bukkit.configuration.file.YamlConfiguration bundled =
+                    org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(
+                            new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8));
+            for (String key : bundled.getKeys(true)) {
+                if (bundled.isConfigurationSection(key)) continue;
+                if (!live.contains(key)) {
+                    live.set(key, bundled.get(key));
+                    added++;
+                }
+            }
+        } catch (Exception e) {
+            getLogger().warning("Config reconciliation failed: " + e.getMessage());
         }
-        live.set("config-version", CONFIG_VERSION);
-        try {
-            live.save(f);
-        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
-        }
-        getLogger().info("Migrated config.yml to v" + CONFIG_VERSION
-                + " (backup: config.yml.bak, new keys added: " + added
-                + (flipped.isEmpty() ? "" : ", defaults flipped: " + String.join("; ", flipped)) + ").");
+        return added;
     }
 
     @Override
