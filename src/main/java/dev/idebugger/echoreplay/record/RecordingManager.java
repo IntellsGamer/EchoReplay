@@ -375,7 +375,16 @@ public final class RecordingManager {
             }
         }
         if (session.mediaMillis() / 1000 > maxDurationMinutes * 60L) {
-            forceStopAndSave();
+            // Auto-stop at max duration: notify the original recorder so they
+            // see the same Saving... action-bar progress as a manual /er stop.
+            java.util.UUID who = null;
+            try {
+                who = session.recorderUuid();
+            } catch (Exception e) {
+                java.util.logging.Logger.getLogger("EchoReplay").log(
+                        java.util.logging.Level.FINE, "EchoReplay: recorder id unavailable", e);
+            }
+            stop(who);
         }
     }
 
@@ -726,8 +735,13 @@ public final class RecordingManager {
     }
 
     public String stop() {
+        return stop(null);
+    }
+
+    /** Stop with save-progress action bars to one player (null = no UI). */
+    public String stop(java.util.UUID notifyId) {
         if (session == null) return "<red>Nothing is recording.</red>";
-        return finalizeAndSave();
+        return finalizeAndSave(notifyId);
     }
 
     public String cancel() {
@@ -756,10 +770,21 @@ public final class RecordingManager {
 
     public String forceStopAndSave() {
         if (session == null) return null;
-        return finalizeAndSave();
+        return finalizeAndSave(null);
     }
 
     private String finalizeAndSave() {
+        return finalizeAndSave(null);
+    }
+
+    /**
+     * Stop and save fully async: the main thread only freezes producers and
+     * snapshots cheap state; draining, sorting, encoding and gzip all run on
+     * the dedicated IO executor (never main, never Netty). Progress goes to
+     * the notifying player's action bar (above the hotbar) as
+     * {@code Saving... N%}, with the final result as chat + action bar.
+     */
+    private String finalizeAndSave(java.util.UUID notifyId) {
         RecordingSession s = session;
         if (s == null) return "<red>Nothing recording.</red>";
         s.setFinalizing();
@@ -784,16 +809,19 @@ public final class RecordingManager {
 
         session = null;
 
+        sendActionBar(notifyId, "<yellow>Saving '<white>" + fname + "</white>'... 0%</yellow>");
         plugin.ioExecutor().execute(() -> {
             File out = new File(recordingsDir, fname + ".echoreplay.gz");
             try {
                 // Final timeline = checkpointed batches + whatever is still buffered.
+                sendActionBar(notifyId, "<yellow>Saving '<white>" + fname + "</white>'... preparing</yellow>");
                 List<TimelineEvent> fev = new ArrayList<>(s.takeCommitted());
                 fev.addAll(s.sink().drainAll());
                 fev.sort(Comparator.comparingLong(TimelineEvent::tickMillis));
-                writeRecordingFile(out, plugin.getServer().getMinecraftVersion(), fworldUuid, fworldName, fc,
-                        fd, fsTime, frecorderUuid, frecorderName, fname, fpal,
-                        fsizeX, fsizeY, fsizeZ, fs.raw(), packSnapNbt(fs, fnbt), fev);
+                writeRecordingFileWithProgress(out, plugin.getServer().getMinecraftVersion(),
+                        fworldUuid, fworldName, fc, fd, fsTime, frecorderUuid, frecorderName,
+                        fname, fpal, fsizeX, fsizeY, fsizeZ, fs.raw(), packSnapNbt(fs, fnbt),
+                        fev, notifyId);
                 plugin.recordingIndex().put(new RecordingEntry(fname, fworldUuid, fworldName, fd, out.length(),
                         fsTime, fc.min().x(), fc.min().y(), fc.min().z(), fc.max().x(), fc.max().y(), fc.max().z()));
                 pruneOldRecordings();
@@ -815,13 +843,62 @@ public final class RecordingManager {
                     plugin.getLogger().log(java.util.logging.Level.FINE,
                             "EchoReplay: autosave cleanup failed", ex);
                 }
+                sendActionBar(notifyId, "<green>Saved '<white>" + fname + "</white>' ("
+                        + RecordingManager.formatDuration(fd) + ")</green>");
+                notifyChat(notifyId, "<green>Saved recording '" + fname + "' ("
+                        + RecordingManager.formatDuration(fd) + ").</green>");
             } catch (IOException e) {
                 // Keep the checkpoint as a safety net; it is recovered on next start.
                 plugin.getLogger().warning("Failed to write recording '" + fname + "': " + e.getMessage()
                         + " — checkpoint kept for recovery on next start.");
+                sendActionBar(notifyId, "<red>Save failed — checkpoint kept</red>");
+                notifyChat(notifyId, "<red>Save failed for '" + fname + "': " + e.getMessage()
+                        + " — checkpoint kept for recovery.</red>");
             }
         });
-        return "<green>Saved recording '" + fname + "' (" + RecordingManager.formatDuration(fd) + ").</green>";
+        return "<yellow>Saving '<white>" + fname + "</white>'... watch the bar above your hotbar.</yellow>";
+    }
+
+    /** Action bar (above the hotbar) update on the main thread; no-op when id null/offline. */
+    private void sendActionBar(java.util.UUID id, String miniMessage) {
+        if (id == null) return;
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                try {
+                    org.bukkit.entity.Player p = org.bukkit.Bukkit.getPlayer(id);
+                    if (p != null && p.isOnline()) {
+                        p.sendActionBar(dev.idebugger.echoreplay.util.Text.mm(miniMessage));
+                    }
+                } catch (Exception e) {
+                    java.util.logging.Logger.getLogger("EchoReplay").log(
+                            java.util.logging.Level.FINE, "EchoReplay: action bar failed", e);
+                }
+            });
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: action bar schedule failed", e);
+        }
+    }
+
+    /** Chat follow-up on the main thread; no-op when id null/offline. */
+    private void notifyChat(java.util.UUID id, String miniMessage) {
+        if (id == null) return;
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                try {
+                    org.bukkit.entity.Player p = org.bukkit.Bukkit.getPlayer(id);
+                    if (p != null && p.isOnline()) {
+                        p.sendMessage(dev.idebugger.echoreplay.util.Text.mm(miniMessage));
+                    }
+                } catch (Exception e) {
+                    java.util.logging.Logger.getLogger("EchoReplay").log(
+                            java.util.logging.Level.FINE, "EchoReplay: notify chat failed", e);
+                }
+            });
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: notify schedule failed", e);
+        }
     }
 
     /**
@@ -832,7 +909,25 @@ public final class RecordingManager {
                                     long duration, long epoch, UUID recUuid, String recName, String name,
                                     List<String> palette, int sizeX, int sizeY, int sizeZ, int[] blocks,
                                     byte[] blockNbt, List<TimelineEvent> events) throws IOException {
+        writeRecordingFileWithProgress(out, serverVersion, worldUuid, worldName, c, duration, epoch,
+                recUuid, recName, name, palette, sizeX, sizeY, sizeZ, blocks, blockNbt, events, null);
+    }
+
+    /**
+     * Chunked variant of {@link #writeRecordingFile} with action-bar progress.
+     * Encoding + gzip stay on the calling (IO) thread; only the tiny UI
+     * updates hop to the main thread. Progress every ~5% and every 2000 events
+     * so the bar moves on both huge and tiny saves without spamming packets.
+     */
+    private void writeRecordingFileWithProgress(File out, String serverVersion, UUID worldUuid, String worldName,
+                                                Cuboid c, long duration, long epoch, UUID recUuid, String recName,
+                                                String name, List<String> palette, int sizeX, int sizeY, int sizeZ,
+                                                int[] blocks, byte[] blockNbt, List<TimelineEvent> events,
+                                                java.util.UUID notifyId) throws IOException {
         File tmp = new File(out.getParentFile(), out.getName() + ".tmp");
+        int total = events.size();
+        int step = Math.max(1, Math.min(2000, Math.max(1, total / 20)));
+        int lastPct = -1;
         try (GzipRecordingWriter w = new GzipRecordingWriter(new BufferedOutputStream(new FileOutputStream(tmp)))) {
             w.writeMeta(serverVersion, worldUuid, worldName,
                     c.min().x(), c.min().y(), c.min().z(), c.max().x(), c.max().y(), c.max().z(),
@@ -841,9 +936,24 @@ public final class RecordingManager {
             w.writeBlocks(sizeX, sizeY, sizeZ, blocks, bitsFor(Math.max(1, palette.size())));
             w.writeBlockNbt(blockNbt);
             w.writeEntities(new byte[0]);
-            for (TimelineEvent ev : events) {
+            if (total == 0) {
+                sendActionBar(notifyId, "<yellow>Saving '<white>" + name + "</white>'... 100%</yellow>");
+            }
+            for (int i = 0; i < total; i++) {
+                TimelineEvent ev = events.get(i);
                 byte[] body = TimelineCodec.encodeBody(ev, palette);
                 w.appendTimelineEvent(ev.tickMillis(), body, (byte) TimelineCodec.typeId(ev));
+                if ((i + 1) % step == 0 || i + 1 == total) {
+                    int pct = (int) ((i + 1) * 100L / Math.max(1, total));
+                    if (pct != lastPct) {
+                        lastPct = pct;
+                        sendActionBar(notifyId, "<yellow>Saving '<white>" + name + "</white>'... "
+                                + pct + "%</yellow>");
+                    }
+                    // Periodic flush bounds memory and makes the tmp file grow
+                    // visibly; cheap relative to per-event encode cost.
+                    if ((i + 1) % 5000 == 0) w.flush();
+                }
             }
         }
         if (!tmp.renameTo(out)) {

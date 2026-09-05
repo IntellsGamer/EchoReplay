@@ -371,7 +371,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
 
     private void stop(CommandSender s) {
         if (!checkPerm(s, "echoreplay.record")) return;
-        String msg = plugin.recordingManager().stop();
+        java.util.UUID id = s instanceof Player p ? p.getUniqueId() : null;
+        String msg = plugin.recordingManager().stop(id);
         s.sendMessage(Text.mm(msg));
     }
 
@@ -383,7 +384,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
 
     private void save(CommandSender s) {
         if (!checkPerm(s, "echoreplay.record")) return;
-        String msg = plugin.recordingManager().stop();
+        java.util.UUID id = s instanceof Player p ? p.getUniqueId() : null;
+        String msg = plugin.recordingManager().stop(id);
         s.sendMessage(Text.mm(msg));
     }
 
