@@ -219,6 +219,13 @@ public final class ReplaySession {
         viewers.remove(p.getUniqueId());
         pendingSyncs.remove(p.getUniqueId());
         syncedStablesFor.remove(p.getUniqueId());
+        stopCamera(p);
+        // Destroy every fake entity on THIS client's screen. Fakes are
+        // packet-only per viewer: without this the leaver keeps seeing
+        // ghosts (e.g. leave right after stopspectate re-spawns the fake
+        // to everyone). Shared state (ids, move anchors, remaining
+        // viewers) is untouched.
+        destroyAllFor(p);
         // If they were spectating, put their own state back (inventory/vitals
         // are still settable during the quit event — teleport is a no-op then)
         // and hand the place back to the fake for the remaining viewers.
@@ -2447,9 +2454,27 @@ public final class ReplaySession {
         dyingRuntimes.put(runtime, DEATH_DELAY_TICKS);
     }
 
+    /**
+     * Destroy every fake currently shown to one player (leave/quit path).
+     * Unlike {@link #destroyFor}, the runtime stays alive for the remaining
+     * viewers: only this viewer's destroy packet goes out and their id is
+     * dropped from the spawned-for sets.
+     */
+    private void destroyAllFor(Player p) {
+        UUID id = p.getUniqueId();
+        for (Map.Entry<Integer, Set<UUID>> e : spawnedFor.entrySet()) {
+            if (!e.getValue().remove(id)) continue;
+            try {
+                fakes.destroy(p, e.getKey());
+            } catch (Exception ex) {
+                java.util.logging.Logger.getLogger("EchoReplay").log(
+                        java.util.logging.Level.FINE, "EchoReplay: leave destroy failed", ex);
+            }
+        }
+    }
+
     /** Send a destroy packet to exactly the players this fake entity was spawned for. */
-    private void destroyFor(int runtimeId) {
-        runtimeFlags.remove(runtimeId);
+    private void destroyFor(int runtimeId) {        runtimeFlags.remove(runtimeId);
         runtimePose.remove(runtimeId);
         fakes.forget(runtimeId);
         Set<UUID> ids = spawnedFor.remove(runtimeId);
