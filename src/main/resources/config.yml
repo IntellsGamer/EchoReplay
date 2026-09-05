@@ -3,7 +3,7 @@
 # Config version — raised when defaults change meaning. On enable, old files
 # are backed up to config.yml.bak, missing keys are filled in, and changed
 # defaults are applied (logged). Never delete this key.
-config-version: 3
+config-version: 4
 #
 # Selection
 selection:
@@ -18,9 +18,18 @@ selection:
   # players who never select.
   outline-particles: false
 
+# Privacy opt-outs (/er privacy). Exempt players are never written into
+# recordings and never see the REC bar — but they can't place/break blocks
+# inside an active recording cuboid either.
+privacy:
+  # Master switch. false = /er privacy refuses, everyone is always recorded.
+  enabled: true
+  # Admin override. true = ignore every stored opt-out and record everyone
+  # anyway (preferences are kept but have no effect).
+  enforce-recording: false
+
 # Recording
-recording:
-  # Grow the recorded region by this many blocks on every side (clamped to
+recording:  # Grow the recorded region by this many blocks on every side (clamped to
   # world height limits) so edge activity is not cut off.
   margin-blocks: 8
   # How often (seconds) buffered events are flushed to the crash-safety

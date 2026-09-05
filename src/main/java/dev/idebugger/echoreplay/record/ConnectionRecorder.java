@@ -42,6 +42,7 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
         s.markEntitySpawned(p.getUniqueId());
@@ -54,6 +55,7 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!p.getWorld().getUID().equals(s.world().getUID())) return;
         int npc = s.npcIdFor(p.getUniqueId());
         s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
@@ -65,8 +67,13 @@ public final class ConnectionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
-        if (p == null || !p.getWorld().getUID().equals(s.world().getUID())) {
-            int npc = p == null ? 0 : s.npcIdFor(p.getUniqueId());
+        if (p != null && plugin.privacy().isExempt(p)) {
+            int npc = s.npcIdFor(p.getUniqueId());
+            s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
+            s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
+            return;
+        }
+        if (p == null || !p.getWorld().getUID().equals(s.world().getUID())) {            int npc = p == null ? 0 : s.npcIdFor(p.getUniqueId());
             if (p != null) {
                 s.emit(new TimelineEvent.PlayerLeave(s.mediaMillis(), npc, 1));
                 s.emit(new TimelineEvent.EntityLeave(s.mediaMillis(), npc));
@@ -91,6 +98,7 @@ public final class ConnectionRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
         if (p == null) return;
+        if (plugin.privacy().isExempt(p)) return;
         var to = e.getTo() != null && e.getTo().getWorld() != null && e.getTo().getWorld().getUID().equals(s.world().getUID());
         int npc = s.npcIdFor(p.getUniqueId());
         if (to) {

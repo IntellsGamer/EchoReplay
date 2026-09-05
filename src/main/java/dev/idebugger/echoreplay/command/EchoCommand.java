@@ -129,6 +129,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "stopplay" -> stopplay(sender);
             case "leave" -> leave(sender);
             case "control" -> control(sender, args);
+            case "fps" -> fps(sender, args);
+            case "privacy" -> privacyCmd(sender, args);
             case "watch" -> watch(sender);
             case "cam" -> cam(sender, args);
             case "spectate" -> spectate(sender, args);
@@ -166,6 +168,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
+            <gray>FPS:</gray> <yellow>/er fps [on|off|toggle|status] (trim replay particles/sounds for you)</yellow>
+            <gray>Privacy:</gray> <yellow>/er privacy [on|off|toggle|status] (opt out of recordings)</yellow>
             <gray>Debug:</gray> <yellow>/er debug nms, stats</yellow>
             <gray>Play permissions:</gray> <yellow>echoreplay.play.* = all, echoreplay.play.&lt;name&gt; = one recording (* = all)</yellow>
             """));
@@ -564,6 +568,95 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         });
     }
 
+    private void fps(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.fps")) return;
+        requirePlayer(s, p -> {
+            var prefs = plugin.fpsPrefs();
+            if (prefs == null) {
+                p.sendMessage(Text.mm("<red>FPS preferences not loaded yet.</red>"));
+                return;
+            }
+            if (args.length == 1) {
+                boolean next = prefs.toggle(p.getUniqueId());
+                p.sendMessage(Text.mm(next
+                        ? "<green>FPS saving on — replay particles/sounds trimmed for you.</green>"
+                        : "<gray>FPS saving off — full replay quality for you.</gray>"));
+                return;
+            }
+            String arg = args[1].toLowerCase();
+            switch (arg) {
+                case "on", "enable", "enabled", "true" -> {
+                    prefs.setEnabled(p.getUniqueId(), true);
+                    p.sendMessage(Text.mm("<green>FPS saving on — replay particles/sounds trimmed for you.</green>"));
+                }
+                case "off", "disable", "disabled", "false" -> {
+                    prefs.setEnabled(p.getUniqueId(), false);
+                    p.sendMessage(Text.mm("<gray>FPS saving off — full replay quality for you.</gray>"));
+                }
+                case "toggle" -> {
+                    boolean next = prefs.toggle(p.getUniqueId());
+                    p.sendMessage(Text.mm(next
+                            ? "<green>FPS saving on — replay particles/sounds trimmed for you.</green>"
+                            : "<gray>FPS saving off — full replay quality for you.</gray>"));
+                }
+                case "status", "info", "state" -> {
+                    boolean on = prefs.isEnabled(p.getUniqueId());
+                    p.sendMessage(Text.mm(on
+                            ? "<gray>FPS saving: <green>on</green> (particles ~1/4, sounds ~1/2).</gray>"
+                            : "<gray>FPS saving: <red>off</red> (full quality).</gray>"));
+                }
+                default -> p.sendMessage(Text.mm("<red>Usage: /er fps [on|off|toggle|status]</red>"));
+            }
+        });
+    }
+
+    private void privacyCmd(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.privacy")) return;
+        var privacy = plugin.privacy();
+        if (privacy == null || !privacy.featureEnabled()) {
+            s.sendMessage(Text.mm("<red>Privacy opt-outs are disabled on this server (config).</red>"));
+            return;
+        }
+        requirePlayer(s, p -> {
+            if (args.length == 1) {
+                boolean out = privacy.toggle(p.getUniqueId());
+                p.sendMessage(Text.mm(privacyMessage(privacy, out)));
+                return;
+            }
+            String arg = args[1].toLowerCase();
+            switch (arg) {
+                case "on", "enable", "enabled", "true" -> {
+                    privacy.setOptedOut(p.getUniqueId(), true);
+                    p.sendMessage(Text.mm(privacyMessage(privacy, true)));
+                }
+                case "off", "disable", "disabled", "false" -> {
+                    privacy.setOptedOut(p.getUniqueId(), false);
+                    p.sendMessage(Text.mm(privacyMessage(privacy, false)));
+                }
+                case "toggle" -> {
+                    boolean out = privacy.toggle(p.getUniqueId());
+                    p.sendMessage(Text.mm(privacyMessage(privacy, out)));
+                }
+                case "status", "info", "state" -> {
+                    boolean out = privacy.isOptedOut(p.getUniqueId());
+                    p.sendMessage(Text.mm(privacyMessage(privacy, out)));
+                }
+                default -> p.sendMessage(Text.mm("<red>Usage: /er privacy [on|off|toggle|status]</red>"));
+            }
+        });
+    }
+
+    private static String privacyMessage(dev.idebugger.echoreplay.record.PrivacyManager privacy, boolean optedOut) {
+        String base = optedOut
+                ? "<gray>Privacy: <green>on</green> — you are exempt from recordings"
+                        + " (no REC bar, but you can't edit inside active recording zones).</gray>"
+                : "<gray>Privacy: <red>off</red> — you are recorded normally.</gray>";
+        if (optedOut && privacy.enforced()) {
+            base += " <yellow>Note: this server enforces recording, so you WILL still be recorded.</yellow>";
+        }
+        return base;
+    }
+
     private void watch(CommandSender s) {
         if (!checkPerm(s, "echoreplay.watch")) return;
         var rep = plugin.replayManager().session();
@@ -842,7 +935,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "resume", "stop", "cancel", "save", "status", "stats", "play", "pause", "resume",
-                "speed", "seek", "ff", "rewind", "stopplay", "leave", "control", "watch", "cam", "spectate",
+                "speed", "seek", "ff", "rewind", "stopplay", "leave", "control", "fps", "privacy", "watch", "cam", "spectate",
                 "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border", "debug");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
@@ -867,6 +960,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("control")) {
+            return Arrays.asList("on", "off", "toggle", "status").stream()
+                    .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && (args[0].equalsIgnoreCase("fps") || args[0].equalsIgnoreCase("privacy"))) {
             return Arrays.asList("on", "off", "toggle", "status").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }

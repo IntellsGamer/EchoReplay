@@ -78,6 +78,14 @@ public final class MovementRecorder extends PacketListenerAbstract {
         if (uuid == null) return;
         // Region membership is maintained on the main thread (no Bukkit here).
         if (!plugin.recordingManager().entityTickRecorder().isInRegion(uuid)) return;
+        // Privacy opt-outs are never recorded (belt-and-braces alongside the
+        // region-set removal in EntityTickRecorder).
+        try {
+            if (plugin.privacy().isExempt(uuid)) return;
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: privacy check failed", e);
+        }
 
         var pt = event.getPacketType();
         boolean wantPos = pt == PacketType.Play.Client.PLAYER_POSITION

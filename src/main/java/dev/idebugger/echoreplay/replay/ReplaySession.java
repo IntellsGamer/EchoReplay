@@ -2305,10 +2305,27 @@ public final class ReplaySession {
         }
     }
 
+    // FPS-saver sampling counters (main thread only): fps viewers receive
+    // ~1/2 of sounds and ~1/4 of particles — trimmed, never fully removed.
+    private int fpsSoundCount = 0;
+    private int fpsParticleCount = 0;
+
+    private boolean isFpsSaver(Player p) {
+        try {
+            var prefs = plugin.fpsPrefs();
+            return prefs != null && prefs.isEnabled(p.getUniqueId());
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: fps check failed", e);
+            return false;
+        }
+    }
+
     private void onSound(TimelineEvent.Sound s) {
         // Skip during seek catch-up (no SFX burst) and when fast-forwarding.
         if (silentApply || clock.speed() > skipSfxAbove) return;
-        org.bukkit.Location loc = new org.bukkit.Location(world, s.pos().x(), s.pos().y(), s.pos().z());
+        fpsSoundCount++;
+        boolean thin = (fpsSoundCount & 1) != 0;        org.bukkit.Location loc = new org.bukkit.Location(world, s.pos().x(), s.pos().y(), s.pos().z());
         String key = s.key();
         if (key.startsWith("minecraft:")) key = key.substring("minecraft:".length());
         org.bukkit.SoundCategory cat;
@@ -2318,6 +2335,7 @@ public final class ReplaySession {
             cat = org.bukkit.SoundCategory.MASTER;
         }
         for (Player p : tickViewers) {
+            if (thin && isFpsSaver(p)) continue;
             try {
                 p.playSound(loc, key, cat, s.volume(), s.pitch());
             } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
@@ -2335,7 +2353,10 @@ public final class ReplaySession {
             return;
         }
         org.bukkit.Location loc = new org.bukkit.Location(world, p.pos().x(), p.pos().y(), p.pos().z());
+        fpsParticleCount++;
+        boolean thinParticles = (fpsParticleCount & 3) != 0;
         for (Player viewer : tickViewers) {
+            if (thinParticles && isFpsSaver(viewer)) continue;
             try {
                 viewer.spawnParticle(bukkitPart, loc, p.count(), p.dx(), p.dy(), p.dz(), p.speed());
             } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}

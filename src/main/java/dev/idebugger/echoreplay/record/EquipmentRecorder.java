@@ -44,6 +44,7 @@ public final class EquipmentRecorder implements Listener {
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Cuboid c = s.cuboid();
         for (Player p : Bukkit.getOnlinePlayers()) {
+            if (plugin.privacy().isExempt(p)) continue;
             if (!p.getWorld().getUID().equals(s.world().getUID())) continue;
             if (!c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) continue;
             int npc = s.npcIdFor(p.getUniqueId());

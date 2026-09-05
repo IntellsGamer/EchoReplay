@@ -87,6 +87,13 @@ public final class EntityTickRecorder {
             UUID uuid = e.getUniqueId();
             Location loc = e.getLocation();
             if (!c.contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) continue;
+            // Privacy opt-outs are never recorded: not observed, not tracked,
+            // not added to the region set (which also gates their movement
+            // packets). Vanishing mid-take emits a normal LEAVE below.
+            if (isPlayer && plugin.privacy().isExempt(uuid)) {
+                inRegion.remove(uuid);
+                continue;
+            }
             inRegion.add(uuid);
             if (isPlayer) seenPlayer = true;
 

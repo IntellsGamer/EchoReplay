@@ -104,6 +104,7 @@ public final class RecordingManager {
         p.getServer().getPluginManager().registerEvents(new FireworkRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(new DamageRecorder(p), p);
         p.getServer().getPluginManager().registerEvents(equipmentRecorder, p);
+        p.getServer().getPluginManager().registerEvents(p.privacy(), p);
     }
 
     public void onDisable() {
@@ -167,6 +168,8 @@ public final class RecordingManager {
         java.util.Set<java.util.UUID> inside = new java.util.HashSet<>();
         for (Player p : org.bukkit.Bukkit.getOnlinePlayers()) {
             try {
+                // Privacy opt-outs never see the REC bar either.
+                if (plugin.privacy().isExempt(p)) continue;
                 if (!p.getWorld().getUID().equals(world.getUID())) continue;
                 if (!cuboid.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(),
                         p.getLocation().getBlockZ())) continue;
@@ -307,6 +310,7 @@ public final class RecordingManager {
         Cuboid c = s.cuboid();
         World world = s.world();
         for (Player p : world.getPlayers()) {
+            if (plugin.privacy().isExempt(p)) continue;
             if (p.getWorld().getUID().equals(world.getUID())
                     && c.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ())) {
                 int npc = s.npcIdFor(p.getUniqueId());

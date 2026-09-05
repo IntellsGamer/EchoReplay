@@ -41,6 +41,7 @@ public final class ActionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
         int anim = switch (e.getAnimationType()) {
@@ -55,6 +56,7 @@ public final class ActionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
         boolean right = e.getAction() == Action.RIGHT_CLICK_AIR || e.getAction() == Action.RIGHT_CLICK_BLOCK;
@@ -71,6 +73,7 @@ public final class ActionRecorder implements Listener {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
         Player p = e.getPlayer();
+        if (plugin.privacy().isExempt(p)) return;
         if (!inRegion(s, p)) return;
         int npc = s.npcIdFor(p.getUniqueId());
         s.emit(new TimelineEvent.ItemUse(s.mediaMillis(), npc, 0, false));
@@ -80,6 +83,7 @@ public final class ActionRecorder implements Listener {
     public void onSneak(PlayerToggleSneakEvent e) {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
+        if (plugin.privacy().isExempt(e.getPlayer())) return;
         if (!inRegion(s, e.getPlayer())) return;
         int npc = s.npcIdFor(e.getPlayer().getUniqueId());
         int flags = (e.isSneaking() ? 0x02 : 0) | (e.getPlayer().isSprinting() ? 0x08 : 0);
@@ -90,6 +94,7 @@ public final class ActionRecorder implements Listener {
     public void onSprint(PlayerToggleSprintEvent e) {
         RecordingSession s = session();
         if (s == null || s.state() != RecordingSession.State.RECORDING) return;
+        if (plugin.privacy().isExempt(e.getPlayer())) return;
         if (!inRegion(s, e.getPlayer())) return;
         int npc = s.npcIdFor(e.getPlayer().getUniqueId());
         int flags = (e.getPlayer().isSneaking() ? 0x02 : 0) | (e.isSprinting() ? 0x08 : 0);

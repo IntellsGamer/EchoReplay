@@ -93,6 +93,11 @@ mvn -DskipTests clean package
 - `/er delete <name>` — **two-step**: run it once, then `/er confirm`
 - `/er rename <old> <new>`
 - `/er border [on|off|toggle|status]` — per-viewer playback border particles
+- `/er fps [on|off|toggle|status]` — FPS saving: trims replay particles
+  (~1/4) and sounds (~1/2) just for you, never fully removed
+- `/er privacy [on|off|toggle|status]` — opt out of recordings (exempt from
+  takes, no REC bar, but no editing inside active recording zones either;
+  disable/enforce server-wide via the `privacy` config section)
 
 ## Permissions
 
@@ -108,6 +113,8 @@ mvn -DskipTests clean package
 | `echoreplay.control` | op | `pause`, `resume`, `speed`, `seek`, `ff`, `rewind`, `stopplay`, `leave`, `control` |
 | `echoreplay.delete` | op | `delete`, `rename`, `confirm` |
 | `echoreplay.border` | true | `border` |
+| `echoreplay.fps` | true | `fps` |
+| `echoreplay.privacy` | true | `privacy` |
 | `echoreplay.bypass-limits` | op | skip selection volume/span limits |
 
 ## How recording works

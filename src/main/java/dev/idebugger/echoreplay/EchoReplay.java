@@ -30,7 +30,9 @@ public final class EchoReplay extends JavaPlugin {
     private final RecordingIndex recordingIndex = new RecordingIndex(new File(getDataFolder(), "recordings/index.yml"));
     private final RecordingManager recordingManager = new RecordingManager(this);
     private final ReplayManager replayManager = new ReplayManager(this);
+    private final dev.idebugger.echoreplay.record.PrivacyManager privacyManager = new dev.idebugger.echoreplay.record.PrivacyManager(this);
     private PlaybackBorderPrefs borderPrefs;
+    private dev.idebugger.echoreplay.replay.FpsPrefs fpsPrefs;
 
     private ExecutorService ioExecutor;
     private int tickTaskId = -1;
@@ -43,7 +45,7 @@ public final class EchoReplay extends JavaPlugin {
     }
 
     /** Bundled config version. Bump when defaults change meaning. */
-    private static final int CONFIG_VERSION = 3;
+    private static final int CONFIG_VERSION = 4;
 
     /**
      * Bring old configs forward: back up, fill in missing keys from bundled
@@ -127,6 +129,8 @@ public final class EchoReplay extends JavaPlugin {
         });
 
         borderPrefs = new PlaybackBorderPrefs(new File(getDataFolder(), "border_prefs.yml"));
+        fpsPrefs = new dev.idebugger.echoreplay.replay.FpsPrefs(new File(getDataFolder(), "fps_prefs.yml"));
+        privacyManager.onEnable(config);
         recordingManager.onEnable(config);
         replayManager.onEnable(config);
 
@@ -312,6 +316,8 @@ public final class EchoReplay extends JavaPlugin {
     public RecordingManager recordingManager() { return recordingManager; }
     public ReplayManager replayManager() { return replayManager; }
     public PlaybackBorderPrefs borderPrefs() { return borderPrefs; }
+    public dev.idebugger.echoreplay.replay.FpsPrefs fpsPrefs() { return fpsPrefs; }
+    public dev.idebugger.echoreplay.record.PrivacyManager privacy() { return privacyManager; }
     public ExecutorService ioExecutor() { return ioExecutor; }
 
     public FileConfiguration cfg() { return getConfig(); }
