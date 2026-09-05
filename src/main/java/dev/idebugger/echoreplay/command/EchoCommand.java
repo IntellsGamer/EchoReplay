@@ -162,7 +162,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>Selection:</gray> <yellow>/er wand, pos1, pos2, select, expand, contract, shift, selinfo, clear</yellow>
             <gray>Record:</gray> <yellow>/er record <name>, resume <name>, stop, cancel, save, status, stats, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
-            <gray>Controls:</gray> <yellow>/er control [on|off|toggle|status] (hotbar VCR: pause, resume, stop, -10s, +10s, speed, restart, leave, help)</yellow>
+            <gray>Controls:</gray> <yellow>/er control [on|off|toggle|status] (hotbar VCR: stop, help, restart, -10s, pause/resume, +10s, speed, spectate menu, leave)</yellow>
             <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>

@@ -312,6 +312,31 @@ public final class ReplaySession {
         return new ArrayList<>(out);
     }
 
+    /** One alive recorded player pickable from the control-mode spectate menu. */
+    public record SpectatablePlayer(String name, UUID uuid,
+                                    dev.idebugger.echoreplay.model.PlayerSkin skin) {}
+
+    /**
+     * Recorded players alive right now (same liveness rule as
+     * {@link #startSpectate}: a current pose must exist), sorted by name.
+     */
+    public List<SpectatablePlayer> spectatablePlayers() {
+        List<SpectatablePlayer> out = new ArrayList<>();
+        for (Map.Entry<Integer, String> e : nameByStable.entrySet()) {
+            int stable = e.getKey();
+            if (!entityPoses.containsKey(stable)) continue;
+            if (!playerSpawnByStable.containsKey(stable)) continue;
+            String n = e.getValue();
+            if (n == null || n.isEmpty()) continue;
+            TimelineEvent.PlayerSpawn ps = playerSpawnByStable.get(stable);
+            out.add(new SpectatablePlayer(n, ps != null ? ps.uuid() : null,
+                    ps != null ? ps.skin() : null));
+        }
+        out.sort(java.util.Comparator.comparing(SpectatablePlayer::name,
+                String.CASE_INSENSITIVE_ORDER));
+        return out;
+    }
+
     /** Teleport each cameraman to the live position of the entity they follow.
      *  Every tick by design: recording samples every packet, so playback must
      *  drive every tick for perfect real-time motion (no deadbands). */
