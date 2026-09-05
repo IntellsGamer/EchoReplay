@@ -209,8 +209,10 @@ public final class ReplaySession {
             p.setGameMode(org.bukkit.GameMode.SPECTATOR);
         }
         // If playback is already running, catch this viewer up to the current
-        // state (entities always; blocks in virtual mode).
-        if (started && phase == Phase.RUN) {
+        // state (entities always; blocks in virtual mode). Queued in every
+        // phase, not just RUN: joins during seek/catchup would otherwise never
+        // sync (the drain only runs in RUN) and come back stale.
+        if (started && phase != Phase.DONE) {
             pendingSyncs.put(p.getUniqueId(), 0);
         }
     }
@@ -240,10 +242,10 @@ public final class ReplaySession {
         unhideSpectator(p);
         if (stable != null) {
             restoreSpectate(p, save);
-            // Null ex-spectator: this player is leaving, and destroyAllFor
-            // above already wiped their client — a personal spawn here would
-            // be a ghost. Remaining viewers are covered by the broadcast path.
-            maybeRespawnSpectatedFake(stable, null);
+            // No personal spawn: this player is leaving, and destroyAllFor
+            // above already wiped their client — spawning here would ghost.
+            // Remaining viewers are covered by the broadcast path.
+            maybeRespawnSpectatedFake(stable);
         }
         for (Set<UUID> set : pausedSpectate.values()) set.remove(p.getUniqueId());
         restoreForcedMode(p);
@@ -669,7 +671,7 @@ public final class ReplaySession {
         if (stable != null) {
             SpectateSave save = spectateSave.remove(p.getUniqueId());
             restoreSpectate(p, save);
-            maybeRespawnSpectatedFake(stable, p);
+            maybeRespawnSpectatedFake(stable);
             ensureSeesStable(p, stable);
             return true;
         }
@@ -795,10 +797,12 @@ public final class ReplaySession {
     }
 
     /** Re-spawn the fake of a spectated stable when nobody spectates it anymore.
-     * @param exSpectator the player coming out of spectate (still watching),
-     *                    or null when the caller is leaving/quit (no personal
-     *                    spawn — that would be a ghost). */
-    private void maybeRespawnSpectatedFake(int stable, Player exSpectator) {
+     * Always tears down any live runtime first and spawns fresh: the runtime
+     * may have been recreated mid-spectate for everyone EXCEPT the ex-spectator
+     * (possessors are skipped), leaving clients diverged with no per-client
+     * fix possible. Destroy + fresh spawn puts every viewer — including the
+     * returning spectator — on the same entity. */
+    private void maybeRespawnSpectatedFake(int stable) {
         for (Integer s : spectateStable.values()) {
             if (s.intValue() == stable) return; // another real player still spectates it
         }
@@ -813,46 +817,22 @@ public final class ReplaySession {
             // spawn record instead of leaving the target invisible.
             pose = new EntityPose(spawn.pos(), spawn.rot());
         }
-        Integer existing = stableToRuntime.get(stable);
-        if (existing == null && !fakes.isExhausted()) {
-            int runtime = fakes.allocateId();
-            stableToRuntime.put(stable, runtime);
-            List<Player> targets = liveViewers();
-            for (Player p : targets) {
-                try {
-                    fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
-                    recordSpawnedFor(runtime, p);
-                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
-                }
+        Integer old = stableToRuntime.remove(stable);
+        if (old != null) destroyFor(old);
+        if (fakes.isExhausted()) return;
+        int runtime = fakes.allocateId();
+        stableToRuntime.put(stable, runtime);
+        List<Player> targets = liveViewers();
+        for (Player p : targets) {
+            try {
+                fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
+                recordSpawnedFor(runtime, p);
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
-            byte[][] eq = lastEquipmentByStable.get(stable);
-            if (eq != null) sendEquipmentBytes(runtime, eq);
-            pushStance(runtime);
-            return;
         }
-        if (existing == null) return; // id band exhausted (already warned)
-        // Runtime already live for everyone else: it was recreated mid-spectate
-        // by respawnPlayerAt, which skips current possessors — so the
-        // ex-spectator never received a spawn. Send them a personal one
-        // (scoped tickViewers keeps equipment/stance packets targeted too).
-        if (exSpectator == null || !exSpectator.isOnline()) return;
-        if (spawnedFor.getOrDefault(existing, java.util.Set.of()).contains(exSpectator.getUniqueId())) return;
-        List<Player> savedViewers = tickViewers;
-        tickViewers = List.of(exSpectator);
-        try {
-            fakes.spawnPlayer(exSpectator, existing, spawn.uuid(), spawn.name(), spawn.skin(),
-                    pose.pos(), pose.rot());
-            recordSpawnedFor(existing, exSpectator);
-            replayPlayerEquipment(existing, spawn);
-            fakes.teleport(exSpectator, existing, pose.pos(), pose.rot().yaw(), pose.rot().pitch(), true);
-            fakes.headLook(exSpectator, existing, pose.rot().headYaw());
-            pushStance(existing);
-        } catch (Exception e) {
-            java.util.logging.Logger.getLogger("EchoReplay").log(
-                    java.util.logging.Level.FINE, "EchoReplay: personal fake re-spawn failed", e);
-        } finally {
-            tickViewers = savedViewers;
-        }
+        byte[][] eq = lastEquipmentByStable.get(stable);
+        if (eq != null) sendEquipmentBytes(runtime, eq);
+        pushStance(runtime);
     }
 
     /**
