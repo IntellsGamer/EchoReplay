@@ -54,7 +54,7 @@ public final class WorldRecorder implements Listener {
             var tile = block.getState(true);
             if (tile != null) nbt = NbtBytes.serializeBlockState(tile);
             if (nbt != null && nbt.length == 0) nbt = null;
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             nbt = null;
         }
         s.emit(new TimelineEvent.BlockSet(s.mediaMillis(),

@@ -71,6 +71,12 @@ public final class RecordingSession {
     // Palette size at the last checkpoint flush (checkpoints only rewrite the
     // palette when it grew — the file stays small).
     private int lastCheckpointPaletteSize = -1;
+    // Rotated (sealed) checkpoint generations. When the live .partial exceeds
+    // storage.checkpoint-rotate-mb it is sealed to .partial.rot<N> and a fresh
+    // .partial is started — the live file stays bounded, recovery merges all
+    // generations in order.
+    private final List<File> rotatedCheckpoints = new ArrayList<>();
+    private int checkpointGeneration = 0;
 
     // World time of the previous recording tick (for change detection).
     private long lastWorldTime = -1;
@@ -214,7 +220,7 @@ public final class RecordingSession {
         try {
             storm = world().hasStorm();
             thunder = world().isThundering();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return;
         }
         int code = (storm ? 1 : 0) | (thunder ? 2 : 0);
@@ -253,7 +259,7 @@ public final class RecordingSession {
             } catch (Exception e) {
                 checkpointWriter = null;
                 if (checkpointStream != null) {
-                    try { checkpointStream.close(); } catch (Exception ignored) {}
+                    try { checkpointStream.close(); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
                     checkpointStream = null;
                 }
                 return;
@@ -273,12 +279,12 @@ public final class RecordingSession {
             if (checkpointWriter == null) return;
             try {
                 checkpointWriter.close();
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 // A failed close just leaves a shorter-but-still-parseable file.
             }
             checkpointWriter = null;
             if (checkpointStream != null) {
-                try { checkpointStream.close(); } catch (Exception ignored) {}
+                try { checkpointStream.close(); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
                 checkpointStream = null;
             }
         }
@@ -302,5 +308,20 @@ public final class RecordingSession {
 
     public synchronized void setLastCheckpointPaletteSize(int n) {
         lastCheckpointPaletteSize = n;
+    }
+
+    public synchronized int checkpointGeneration() {
+        return checkpointGeneration;
+    }
+
+    public synchronized void noteRotatedCheckpoint(File sealed) {
+        rotatedCheckpoints.add(sealed);
+        checkpointGeneration++;
+        // Fresh file needs a full palette header again.
+        lastCheckpointPaletteSize = -1;
+    }
+
+    public synchronized List<File> rotatedCheckpoints() {
+        return List.copyOf(rotatedCheckpoints);
     }
 }

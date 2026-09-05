@@ -112,6 +112,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "confirm" -> confirm(sender);
             case "marker" -> marker(sender, args);
             case "border" -> border(sender, args);
+            case "debug" -> debug(sender, args);
             default -> {
                 sender.sendMessage(Text.mm("<red>Unknown subcommand '" + sub + "'. Use /er for help.</red>"));
             }
@@ -136,6 +137,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
+            <gray>Debug:</gray> <yellow>/er debug nms</yellow>
             """));
     }
 
@@ -624,6 +626,21 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         s.sendMessage(Text.mm("<gray>Marker '" + name + "' placed.</gray>"));
     }
 
+    private void debug(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.use")) return;
+        String what = args.length > 1 ? args[1].toLowerCase() : "";
+        if (what.equals("nms")) {
+            boolean avail = dev.idebugger.echoreplay.record.RegionDiffRecorder.isNmsAvailable();
+            String desc = dev.idebugger.echoreplay.record.RegionDiffRecorder.describeNms();
+            boolean active = plugin.recordingManager().regionDiffRecorder().isActive();
+            s.sendMessage(Text.mm("<gray>RegionDiff NMS: " + (avail ? "<green>available</green>" : "<red>unavailable (Bukkit fallback)</red>")
+                    + "<newline>" + desc
+                    + "<newline>scanner active: " + active + "</gray>"));
+        } else {
+            s.sendMessage(Text.mm("<red>Usage: /er debug nms</red>"));
+        }
+    }
+
     private void border(CommandSender s, String[] args) {
         if (!checkPerm(s, "echoreplay.border")) return;
         requirePlayer(s, p -> {
@@ -696,7 +713,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "stop", "cancel", "save", "status", "play", "pause", "resume",
                 "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "spectate",
-                "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border");
+                "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border", "debug");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
             for (String s : subs) if (s.startsWith(args[0].toLowerCase())) out.add(s);
@@ -712,6 +729,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("border")) {
             return Arrays.asList("on", "off", "toggle", "status").stream()
+                    .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("debug")) {
+            return Arrays.asList("nms").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("cam") || args[0].equalsIgnoreCase("spectate"))) {

@@ -203,7 +203,7 @@ public final class EntityTickRecorder {
         // changes (idle scans drop to ~1/sec; paused entirely while lagging).
         try {
             plugin.recordingManager().regionDiffRecorder().setAudienceNearby(seenPlayer);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -274,7 +274,7 @@ public final class EntityTickRecorder {
         int mode;
         try {
             mode = p.getGameMode().getValue();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             mode = 0;
         }
         Integer prevMode = lastGameMode.get(uuid);
@@ -286,7 +286,7 @@ public final class EntityTickRecorder {
         int held = 0;
         try {
             held = inv.getHeldItemSlot();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         Integer prevHeld = lastHeldSlot.get(uuid);
         if (prevHeld == null || prevHeld != held) {

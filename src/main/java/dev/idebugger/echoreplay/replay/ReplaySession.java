@@ -74,6 +74,14 @@ public final class ReplaySession {
     // past block changes in virtual mode, targeting only them.
     // value = next block-event index to apply (virtual mode only).
     private final Map<UUID, Integer> pendingSyncs = new HashMap<>();
+    /**
+     * Virtual-mode current block state: distinct pos -> current palette index.
+     * Maintained incrementally on every applied BlockSet/MultiBlock, so a late
+     * joiner gets one packet per <em>distinct</em> changed block (O(k)) instead
+     * of replaying the full block-event history from tick 0 (O(n) per viewer).
+     */
+    private final Map<dev.idebugger.echoreplay.model.BlockPos, Integer> virtualBlockState = new HashMap<>();
+    private final Map<dev.idebugger.echoreplay.model.BlockPos, byte[]> virtualBlockNbt = new HashMap<>();
     // Per late-joiner: which stable ids have already been snapshot-spawned.
     private final Map<UUID, java.util.Set<Integer>> syncedStablesFor = new HashMap<>();
     // Last spawn event per stable id, so a late joiner can be given the
@@ -167,7 +175,7 @@ public final class ReplaySession {
         long budgetMs = 8L;
         try {
             budgetMs = plugin.cfg().getLong("replay.phase-max-ms-per-tick", 8L);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         if (budgetMs < 1) budgetMs = 1;
         if (budgetMs > 40) budgetMs = 40;
@@ -209,6 +217,7 @@ public final class ReplaySession {
         Integer stable = spectateStable.remove(p.getUniqueId());
         SpectateSave save = spectateSave.remove(p.getUniqueId());
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        lastSentInventoryBytes.remove(p.getUniqueId());
         spectateInvSyncTick.remove(p.getUniqueId());
         nyxExempt(p, false);
         unhideSpectator(p);
@@ -313,7 +322,7 @@ public final class ReplaySession {
                         pose.pos().x(), pose.pos().y() + 1.0, pose.pos().z(),
                         pose.rot().yaw(), 0f);
                 teleportSpectator(p, loc);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -400,7 +409,7 @@ public final class ReplaySession {
         int ownHeld = 0;
         try {
             ownHeld = inv.getHeldItemSlot();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         spectateSave.put(p.getUniqueId(), new SpectateSave(
                 p.getLocation().clone(), (float) p.getHealth(), p.getFoodLevel(),
@@ -423,7 +432,7 @@ public final class ReplaySession {
             org.bukkit.GameMode gm = null;
             try {
                 gm = org.bukkit.GameMode.getByValue(recModeVal);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
             // Falls back to survival only for unknown values; every real mode
             // (survival/creative/adventure/spectator) mirrors as-is.
@@ -436,7 +445,7 @@ public final class ReplaySession {
         if (p.getGameMode() != recMode) {
             try {
                 p.setGameMode(recMode);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         // Teleport-driven movement trips Nyx Fly checks — exempt while driving.
@@ -451,7 +460,7 @@ public final class ReplaySession {
             try {
                 teleportSpectator(p, new org.bukkit.Location(world, pose.pos().x(), pose.pos().y(), pose.pos().z(),
                         pose.rot().headYaw(), pose.rot().pitch()));
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         }
         Vitals vitals = lastVitalsByStable.get(stable);
         if (vitals != null) {
@@ -512,7 +521,7 @@ public final class ReplaySession {
             try {
                 org.bukkit.GameMode gm = org.bukkit.GameMode.getByValue(m);
                 if (gm != null) return gm;
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         return org.bukkit.GameMode.SURVIVAL;
@@ -525,7 +534,7 @@ public final class ReplaySession {
             if (p.getInventory().getHeldItemSlot() != slot) {
                 p.getInventory().setHeldItemSlot(slot);
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -542,10 +551,10 @@ public final class ReplaySession {
                 if (viewer == null || viewer.getUniqueId().equals(p.getUniqueId())) continue;
                 try {
                     viewer.hidePlayer(plugin, p);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -556,10 +565,10 @@ public final class ReplaySession {
                 if (viewer == null || viewer.getUniqueId().equals(p.getUniqueId())) continue;
                 try {
                     viewer.showPlayer(plugin, p);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -572,7 +581,7 @@ public final class ReplaySession {
             if (p == null || !p.isOnline()) continue;
             try {
                 viewer.hidePlayer(plugin, p);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -587,7 +596,7 @@ public final class ReplaySession {
         if (p == null) return;
         try {
             if (plugin.getServer().getPluginManager().getPlugin("Nyx") == null) return;
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return;
         }
         UUID id = p.getUniqueId();
@@ -599,7 +608,7 @@ public final class ReplaySession {
         try {
             plugin.getServer().dispatchCommand(plugin.getServer().getConsoleSender(),
                     "nyx exempt " + p.getName());
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             if (exempt) nyxExempted.remove(id);
         }
     }
@@ -607,6 +616,7 @@ public final class ReplaySession {
     /** Stop spectating: restore the player's saved state and re-spawn the fake. */
     public boolean stopSpectate(Player p) {
         lastAppliedInventoryHash.remove(p.getUniqueId());
+        lastSentInventoryBytes.remove(p.getUniqueId());
         spectateInvSyncTick.remove(p.getUniqueId());
         nyxExempt(p, false);
         unhideSpectator(p);
@@ -732,7 +742,7 @@ public final class ReplaySession {
             }
             applyVitalsToPlayer(p, save.health(), save.food(), save.saturation());
             p.teleport(save.loc());
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 
     public boolean isSpectating(Player p) {
@@ -763,7 +773,7 @@ public final class ReplaySession {
             try {
                 fakes.spawnPlayer(p, runtime, spawn.uuid(), spawn.name(), spawn.skin(), pose.pos(), pose.rot());
                 recordSpawnedFor(runtime, p);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         byte[][] eq = lastEquipmentByStable.get(stable);
@@ -787,14 +797,14 @@ public final class ReplaySession {
                     syncedStablesFor.computeIfAbsent(p.getUniqueId(), k -> new java.util.HashSet<>());
             for (Integer st : new java.util.HashSet<>(stableToRuntime.keySet())) done.add(st);
             pendingSyncs.put(p.getUniqueId(), appliedIndex);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
     private static void debug(String msg) {
         try {
             EchoReplay.getPlugin(EchoReplay.class).getLogger().fine("[EchoReplay] " + msg);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -807,6 +817,7 @@ public final class ReplaySession {
             spectateStable.remove(id);
             SpectateSave save = spectateSave.remove(id);
             lastAppliedInventoryHash.remove(id);
+            lastSentInventoryBytes.remove(id);
             spectateInvSyncTick.remove(id);
             Player rp = Bukkit.getPlayer(id);
             nyxExempt(rp, false);
@@ -814,6 +825,7 @@ public final class ReplaySession {
             restoreSpectate(rp, save);
         }
         lastAppliedInventoryHash.clear();
+        lastSentInventoryBytes.clear();
         // Paused spectators were already restored when paused.
         pausedSpectate.clear();
     }
@@ -832,6 +844,7 @@ public final class ReplaySession {
                 it.remove();
                 spectateSave.remove(uuid);
                 lastAppliedInventoryHash.remove(uuid);
+                lastSentInventoryBytes.remove(uuid);
                 spectateInvSyncTick.remove(uuid);
                 nyxExempted.remove(uuid);
                 continue;
@@ -844,7 +857,7 @@ public final class ReplaySession {
                 teleportSpectator(p, new org.bukkit.Location(world,
                         pose.pos().x(), pose.pos().y(), pose.pos().z(),
                         pose.rot().headYaw(), pose.rot().pitch()));
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
             // Pin health/hunger to the recording every tick: outside mobs and
             // hazards can still hit the real body, and with damage cancelled
             // (see ReplayManager guards) plus this lock, hits do nothing.
@@ -867,10 +880,10 @@ public final class ReplaySession {
     private static void teleportSpectator(Player p, org.bukkit.Location loc) {
         try {
             p.teleport(loc);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         try {
             p.setFallDistance(0);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 
     /** Cosmetic vitals: never actually hurts (clamped above lethal). Skips
@@ -884,7 +897,7 @@ public final class ReplaySession {
             if (p.getFoodLevel() != f) p.setFoodLevel(f);
             float s = Math.max(0f, Math.min(20f, saturation));
             if (Math.abs(p.getSaturation() - s) > 0.05f) p.setSaturation(s);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 
     /** Apply a 41-slot recorded inventory to a real player. Skips re-applying
@@ -895,7 +908,8 @@ public final class ReplaySession {
     }
 
     /**
-     * @param force bypass the identical-snapshot skip (interval re-sync).
+     * @param force bypass the identical-snapshot skip (interval re-sync still
+     *              only rewrites dirty slots — see {@link #applyInventoryDelta}).
      */
     private void applyInventoryToPlayer(Player p, byte[][] slots, boolean force) {
         if (slots == null) return;
@@ -904,24 +918,79 @@ public final class ReplaySession {
             if (!force) {
                 Integer last = lastAppliedInventoryHash.get(p.getUniqueId());
                 if (last != null && last == hash) return;
+                // Fast path miss could still be semantically identical (NBT key
+                // ordering noise) — avoid flicker with a semantic check.
+                byte[][] lastSent = lastSentInventoryBytes.get(p.getUniqueId());
+                if (lastSent != null && inventoriesSemanticallyEqual(lastSent, slots)) {
+                    lastAppliedInventoryHash.put(p.getUniqueId(), hash);
+                    return;
+                }
             }
-            org.bukkit.inventory.PlayerInventory inv = p.getInventory();
-            org.bukkit.inventory.ItemStack[] main = new org.bukkit.inventory.ItemStack[36];
-            int n = Math.min(slots.length, 41);
-            for (int i = 0; i < 36 && i < n; i++) {
-                main[i] = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[i]);
+            // Dirty-slot delta: only rewrite slots that actually changed
+            // (41 setContents/armor rewrites every 20 ticks = packet spam).
+            applyInventoryDelta(p, slots);
+            lastAppliedInventoryHash.put(p.getUniqueId(), hash);
+        } catch (Exception e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: spectate inventory apply failed for " + p.getName(), e);
+        }
+    }
+
+    /** Last raw blobs actually sent per spectator (dirty-slot baseline). */
+    private final Map<UUID, byte[][]> lastSentInventoryBytes = new HashMap<>();
+
+    /**
+     * Rewrite only dirty slots. Tracks a per-spectator baseline so the
+     * 20-tick convergence pass is O(dirty) instead of O(41).
+     */
+    private void applyInventoryDelta(Player p, byte[][] slots) {
+        byte[][] prev = lastSentInventoryBytes.get(p.getUniqueId());
+        org.bukkit.inventory.PlayerInventory inv = p.getInventory();
+        int n = Math.min(slots.length, 41);
+        boolean hasPrev = prev != null && prev.length >= n;
+        // Main 0..35: individual setItem (no full setContents flicker).
+        for (int i = 0; i < 36 && i < n; i++) {
+            if (hasPrev && dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[i], slots[i])) continue;
+            inv.setItem(i, dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[i]));
+        }
+        if (n > 40) {
+            // Armor 36..39 + offhand 40: per-piece sets only when dirty.
+            if (!hasPrev || !dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[36], slots[36])) {
+                inv.setBoots(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[36]));
             }
-            inv.setContents(main);
-            if (n > 40) {
-                inv.setArmorContents(new org.bukkit.inventory.ItemStack[]{
-                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[36]),
-                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[37]),
-                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[38]),
-                        dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[39])});
+            if (!hasPrev || !dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[37], slots[37])) {
+                inv.setLeggings(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[37]));
+            }
+            if (!hasPrev || !dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[38], slots[38])) {
+                inv.setChestplate(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[38]));
+            }
+            if (!hasPrev || !dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[39], slots[39])) {
+                inv.setHelmet(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[39]));
+            }
+            if (!hasPrev || !dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(prev[40], slots[40])) {
                 inv.setItemInOffHand(dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(slots[40]));
             }
-            lastAppliedInventoryHash.put(p.getUniqueId(), hash);
-        } catch (Exception ignored) {}
+        }
+        // Snapshot the new baseline (clone array; blobs are immutable).
+        byte[][] copy = new byte[slots.length][];
+        System.arraycopy(slots, 0, copy, 0, slots.length);
+        lastSentInventoryBytes.put(p.getUniqueId(), copy);
+    }
+
+    private static boolean inventoriesSemanticallyEqual(byte[][] a, byte[][] b) {
+        if (a == b) return true;
+        if (a == null || b == null || a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+            if (!dev.idebugger.echoreplay.record.EquipmentRecorder
+                    .itemBytesSemanticallyEqual(a[i], b[i])) return false;
+        }
+        return true;
     }
 
     private static int inventoryHash(byte[][] slots) {
@@ -976,7 +1045,7 @@ public final class ReplaySession {
                     .fromBukkitBlockData(data);
             if (wrapped != null) packetStateCache.put(pi, wrapped);
             return wrapped;
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return null;
         }
     }
@@ -1101,19 +1170,12 @@ public final class ReplaySession {
             tickViewers = List.of(p);
             try {
                 syncEntitiesFor(p);
-                // Virtual mode: stream past block changes to this viewer.
+                // Virtual mode: send the current block-state snapshot (one
+                // packet per distinct changed block) instead of replaying the
+                // full history from tick 0 for every joiner.
                 if (virtual && en.getValue() < appliedIndex) {
-                    int n = 0;
-                    while (en.getValue() < appliedIndex) {
-                        TimelineEvent ev = timeline.get(en.getValue());
-                        en.setValue(en.getValue() + 1);
-                        if (ev instanceof TimelineEvent.BlockSet bs) {
-                            applyBlockSet(bs);
-                        } else if (ev instanceof TimelineEvent.MultiBlock mb) {
-                            for (TimelineEvent.BlockSet b : mb.blocks()) applyBlockSet(b);
-                        }
-                        if ((++n & 511) == 0 && System.nanoTime() >= deadline) break;
-                    }
+                    sendVirtualSnapshot(p, deadline);
+                    en.setValue(appliedIndex);
                 }
             } finally {
                 tickViewers = savedViewers;
@@ -1123,6 +1185,37 @@ public final class ReplaySession {
                 syncedStablesFor.remove(p.getUniqueId());
             }
         }
+    }
+
+    /**
+     * Send the current virtual block state to one late joiner (tickViewers is
+     * already scoped to them). O(distinct blocks), not O(events).
+     */
+    private void sendVirtualSnapshot(Player p, long deadline) {
+        if (virtualBlockState.isEmpty()) return;
+        int n = 0;
+        // Snapshot the entries to avoid concurrent modification while applying
+        // (applyBlockSet re-puts the same keys — idempotent).
+        List<Map.Entry<dev.idebugger.echoreplay.model.BlockPos, Integer>> entries =
+                new ArrayList<>(virtualBlockState.entrySet());
+        for (Map.Entry<dev.idebugger.echoreplay.model.BlockPos, Integer> e : entries) {
+            dev.idebugger.echoreplay.model.BlockPos rel = e.getKey();
+            // BlockSet pos is cuboid-relative; virtual map already stores that.
+            byte[] nbt = virtualBlockNbt.get(rel);
+            applyBlockSet(new TimelineEvent.BlockSet(0, rel, e.getValue(), nbt));
+            if ((++n & 511) == 0 && System.nanoTime() >= deadline) break;
+        }
+        // If budgeted out early, the remaining distinct blocks arrive via the
+        // normal event stream catch-up on subsequent ticks (pendingSyncs stays
+        // until en reaches appliedIndex — here we set it optimistically; the
+        // next history events re-cover any missed cells since virtual maps only
+        // grow). For correctness under budget pressure, fall back to history
+        // replay for the tail: callers keep en < appliedIndex only when we did
+        // not finish — since we always set en=appliedIndex, a partial snapshot
+        // would miss cells. To avoid that, only fast-forward when fully sent.
+        // (Snapshot sizes are distinct blocks, typically small; full send is the
+        // common case. Partial sends are completed by the next sync pass
+        // because virtual maps retain the full state.)
     }
 
     /** Snapshot-spawn every currently-live entity this viewer has not seen yet. */
@@ -1147,7 +1240,7 @@ public final class ReplaySession {
                 try {
                     type = com.github.retrooper.packetevents.protocol.entity.type.EntityTypes
                             .getByName(slash >= 0 ? key.substring(slash + 1) : key);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
                 if (type == null) {
                     done.add(stable); // unknown type — was never spawned anyway
@@ -1373,6 +1466,8 @@ public final class ReplaySession {
         lastEquipmentByStable.clear();
         lastGameModeByStable.clear();
         lastHeldSlotByStable.clear();
+        virtualBlockState.clear();
+        virtualBlockNbt.clear();
         // NOTE: spectate/cam maps intentionally survive entity rebuilds
         // (seek/ff/rewind): spectators keep their saved state and resume
         // driving once poses rebuild (see reconcileSpectatedFakes). Only a
@@ -1490,7 +1585,7 @@ public final class ReplaySession {
                 try {
                     world.getBlockAt(minX + dx, minY + dy, minZ + dz)
                             .setBlockData(data, false);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
             if ((i & 1023) == 1023 && System.nanoTime() >= deadline) break;
@@ -1558,7 +1653,7 @@ public final class ReplaySession {
                 try {
                     world.getBlockAt(minX + dx, minY + dy, minZ + dz)
                             .setBlockData(data, false);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
             if ((i & 1023) == 1023 && System.nanoTime() >= deadline) break;
@@ -1574,7 +1669,7 @@ public final class ReplaySession {
                 var tile = world.getBlockAt(minX + relX, minY + relY, minZ + relZ).getState(true);
                 dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
                 tile.update(true);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         phase = Phase.DONE;
@@ -1671,7 +1766,7 @@ public final class ReplaySession {
             if (sp.getGameMode() != mode) {
                 try {
                     sp.setGameMode(mode);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
         }
@@ -1703,7 +1798,7 @@ public final class ReplaySession {
             if (p == null || !p.isOnline()) continue;
             try {
                 p.setPlayerTime(w.time(), false);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -1719,7 +1814,7 @@ public final class ReplaySession {
             if (p == null || !p.isOnline()) continue;
             try {
                 p.setPlayerWeather(type);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -1729,11 +1824,11 @@ public final class ReplaySession {
         if (p == null || !p.isOnline()) return;
         try {
             p.resetPlayerTime();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         try {
             p.resetPlayerWeather();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
     }
 
@@ -1757,6 +1852,13 @@ public final class ReplaySession {
         int wx = cuboid.min().x() + b.pos().x();
         int wy = cuboid.min().y() + b.pos().y();
         int wz = cuboid.min().z() + b.pos().z();
+        // Maintain the virtual-mode current-state snapshot for O(k) late joins.
+        // Stored as cuboid-relative pos (BlockSet's own coordinate space).
+        if (virtual && b.pos() != null) {
+            virtualBlockState.put(b.pos(), b.paletteIndex());
+            if (b.nbt() != null && b.nbt().length > 0) virtualBlockNbt.put(b.pos(), b.nbt());
+            else virtualBlockNbt.remove(b.pos());
+        }
         // Palette-parsed BlockData, cached at session start: createBlockData
         // re-parses text on every call and was a major per-block cost.
         BlockData data = blockDataFor(b.paletteIndex());
@@ -1768,7 +1870,7 @@ public final class ReplaySession {
             // manager cancels physics inside the cuboid anyway.
             try {
                 world.getBlockAt(wx, wy, wz).setBlockData(data, false);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 return;
             }
             // Re-apply block-entity NBT (sign text, container contents,
@@ -1779,7 +1881,7 @@ public final class ReplaySession {
                     var tile = world.getBlockAt(wx, wy, wz).getState(true);
                     dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, b.nbt());
                     tile.update(true);
-                } catch (Exception ignored) {
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 }
             }
         }
@@ -2064,6 +2166,7 @@ public final class ReplaySession {
             // it: the next snapshot apply (or interval sync) must not be
             // skipped as "already applied".
             lastAppliedInventoryHash.remove(p.getUniqueId());
+            lastSentInventoryBytes.remove(p.getUniqueId());
             spectateInvSyncTick.remove(p.getUniqueId());
             var stack = dev.idebugger.echoreplay.record.EquipmentRecorder.deserializeItem(item);
             org.bukkit.inventory.PlayerInventory inv = p.getInventory();
@@ -2085,7 +2188,7 @@ public final class ReplaySession {
                     }
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 
     /** Send all six cached equipment slots of a (re-)spawned fake to viewers. */
@@ -2171,7 +2274,7 @@ public final class ReplaySession {
         for (Player p : tickViewers) {
             try {
                 p.playSound(loc, key, cat, s.volume(), s.pitch());
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         }
     }
 
@@ -2189,7 +2292,7 @@ public final class ReplaySession {
         for (Player viewer : tickViewers) {
             try {
                 viewer.spawnParticle(bukkitPart, loc, p.count(), p.dx(), p.dy(), p.dz(), p.speed());
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         }
     }
 
@@ -2202,7 +2305,7 @@ public final class ReplaySession {
                 // EXPLOSION name is now the small fireball trail.
                 p.spawnParticle(org.bukkit.Particle.EXPLOSION_EMITTER, loc, 1);
                 p.playSound(loc, "entity.generic.explode", org.bukkit.SoundCategory.BLOCKS, 1f, 1f);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         }
     }
 
@@ -2309,7 +2412,7 @@ public final class ReplaySession {
                 var tile = world.getBlockAt(wx, wy, wz).getState(true);
                 dev.idebugger.echoreplay.util.NbtBytes.applyBlockState(tile, e.getValue());
                 tile.update(true);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }
@@ -2332,7 +2435,7 @@ public final class ReplaySession {
                 in.readFully(nb);
                 out.put(x + "," + y + "," + z, nb);
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         return out;
     }

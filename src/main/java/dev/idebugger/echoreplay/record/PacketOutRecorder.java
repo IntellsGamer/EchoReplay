@@ -88,7 +88,7 @@ public final class PacketOutRecorder extends PacketListenerAbstract {
             // opportunistic cleanup
             if (lastSound.size() > 1024) lastSound.clear();
             s.emit(new TimelineEvent.Sound(media, key, cat, new Vec3d(x, y, z), vol, pitch));
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 
     private void handleParticle(PacketSendEvent event, RecordingSession s) {
@@ -110,6 +110,6 @@ public final class PacketOutRecorder extends PacketListenerAbstract {
             lastParticle.put(dedup, media);
             if (lastParticle.size() > 2048) lastParticle.clear();
             s.emit(new TimelineEvent.Particle(media, key, new Vec3d(x, y, z), dx, dy, dz, speed, count));
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
     }
 }

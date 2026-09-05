@@ -163,7 +163,7 @@ public final class GzipRecordingReader {
                 in.readFully(body);
                 var ev = TimelineCodec.decode(body, typeId, t, palette);
                 if (ev != null) out.add(ev);
-            } catch (IOException ignored) {
+            } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
             }
         }
         out.sort(java.util.Comparator.comparingLong(dev.idebugger.echoreplay.model.TimelineEvent::tickMillis));

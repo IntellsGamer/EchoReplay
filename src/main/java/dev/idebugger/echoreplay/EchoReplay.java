@@ -43,7 +43,7 @@ public final class EchoReplay extends JavaPlugin {
     }
 
     /** Bundled config version. Bump when defaults change meaning. */
-    private static final int CONFIG_VERSION = 2;
+    private static final int CONFIG_VERSION = 3;
 
     /**
      * Bring old configs forward: back up, fill in missing keys from bundled
@@ -57,14 +57,14 @@ public final class EchoReplay extends JavaPlugin {
         int v = 0;
         try {
             v = live.getInt("config-version", 0);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         if (v >= CONFIG_VERSION) return;
         try {
             java.nio.file.Files.copy(f.toPath(),
                     new File(getDataFolder(), "config.yml.bak").toPath(),
                     java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         int added = 0;
         try (java.io.InputStream in = getResource("config.yml")) {
@@ -80,7 +80,7 @@ public final class EchoReplay extends JavaPlugin {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         java.util.List<String> flipped = new java.util.ArrayList<>();
         if (v < 2) {
@@ -99,7 +99,7 @@ public final class EchoReplay extends JavaPlugin {
         live.set("config-version", CONFIG_VERSION);
         try {
             live.save(f);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         getLogger().info("Migrated config.yml to v" + CONFIG_VERSION
                 + " (backup: config.yml.bak, new keys added: " + added
@@ -155,7 +155,7 @@ public final class EchoReplay extends JavaPlugin {
                 org.bukkit.block.data.BlockData air =
                         getServer().createBlockData("minecraft:air");
                 io.github.retrooper.packetevents.util.SpigotConversionUtil.fromBukkitBlockData(air);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
         });
 
         Text.broadcast(Text.mm("<gray>EchoReplay <green>enabled</green>.</gray>"));
@@ -221,14 +221,14 @@ public final class EchoReplay extends JavaPlugin {
         dev.idebugger.echoreplay.record.RecordingSession s;
         try {
             s = recordingManager.activeSession();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return;
         }
         if (s == null) return;
         dev.idebugger.echoreplay.record.RecordingSession.State st;
         try {
             st = s.state();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return;
         }
         if (st != dev.idebugger.echoreplay.record.RecordingSession.State.SNAPSHOTTING
@@ -240,7 +240,7 @@ public final class EchoReplay extends JavaPlugin {
             if (borderPrefs != null && !borderPrefs.isEnabled(p.getUniqueId())) continue;
             try {
                 if (!p.getWorld().getUID().equals(w.getUID())) continue;
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 continue;
             }
             renderWireframe(p, c);
@@ -253,7 +253,7 @@ public final class EchoReplay extends JavaPlugin {
         org.bukkit.Location loc;
         try {
             loc = p.getLocation();
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             return;
         }
         // Skip viewers far away: particle packets would just be dropped
@@ -301,7 +301,7 @@ public final class EchoReplay extends JavaPlugin {
             budget[0]--;
             try {
                 p.spawnParticle(part, x, y, z, 1);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
     }

@@ -28,6 +28,8 @@ public final class EquipmentRecorder implements Listener {
 
     private final EchoReplay plugin;
     private final Map<Integer, Map<Integer, String>> lastEquipmentKey = new HashMap<>();
+    /** Last seen ItemStack per npc/slot for semantic (isSimilar) comparison. */
+    private final Map<Integer, Map<Integer, org.bukkit.inventory.ItemStack>> lastEquipmentItem = new HashMap<>();
 
     public EquipmentRecorder(EchoReplay plugin) {
         this.plugin = plugin;
@@ -58,12 +60,51 @@ public final class EquipmentRecorder implements Listener {
 
     private void emitIfChanged(RecordingSession s, int npcId, int slot, org.bukkit.inventory.ItemStack item) {
         Map<Integer, String> playerKeys = lastEquipmentKey.computeIfAbsent(npcId, k -> new HashMap<>());
+        Map<Integer, org.bukkit.inventory.ItemStack> playerItems =
+                lastEquipmentItem.computeIfAbsent(npcId, k -> new HashMap<>());
+        org.bukkit.inventory.ItemStack prev = playerItems.get(slot);
+        if (itemsSemanticallyEqual(prev, item)) return;
+        playerItems.put(slot, item == null ? null : item.clone());
         String key = item == null || item.getType() == org.bukkit.Material.AIR ? "AIR" : item.getType().name() + ":" + item.getAmount();
-        String lastKey = playerKeys.get(slot);
-        if (key.equals(lastKey)) return;
         playerKeys.put(slot, key);
         byte[] bytes = serializeItem(item);
         s.emit(new TimelineEvent.Equipment(s.mediaMillis(), npcId, slot, bytes));
+    }
+
+    /**
+     * Semantic item equality (ignores NBT key ordering and other
+     * serialization noise): same material + amount + {@link
+     * org.bukkit.inventory.ItemStack#isSimilar} meta. Null and air are
+     * treated as equal empties.
+     */
+    public static boolean itemsSemanticallyEqual(org.bukkit.inventory.ItemStack a,
+                                                org.bukkit.inventory.ItemStack b) {
+        boolean aEmpty = a == null || a.getType() == org.bukkit.Material.AIR;
+        boolean bEmpty = b == null || b.getType() == org.bukkit.Material.AIR;
+        if (aEmpty && bEmpty) return true;
+        if (aEmpty != bEmpty) return false;
+        if (a.getType() != b.getType()) return false;
+        if (a.getAmount() != b.getAmount()) return false;
+        try {
+            return a.isSimilar(b);
+        } catch (Exception e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: equipment similarity check failed, treating as changed", e);
+            return false;
+        }
+    }
+
+    /** Byte-blob semantic equality for replay-side dedup (deserializes both). */
+    public static boolean itemBytesSemanticallyEqual(byte[] a, byte[] b) {
+        if (a == b) return true;
+        if (a == null || b == null) {
+            return (a == null || a.length == 0) && (b == null || b.length == 0);
+        }
+        if (a.length == 0 && b.length == 0) return true;
+        if (java.util.Arrays.equals(a, b)) return true;
+        org.bukkit.inventory.ItemStack ia = deserializeItem(a);
+        org.bukkit.inventory.ItemStack ib = deserializeItem(b);
+        return itemsSemanticallyEqual(ia, ib);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -97,12 +138,20 @@ public final class EquipmentRecorder implements Listener {
             org.bukkit.util.io.BukkitObjectOutputStream out = new org.bukkit.util.io.BukkitObjectOutputStream(bos);
             out.writeObject(item);
             out.flush();
-        } catch (IOException ignored) {
+        } catch (IOException e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: failed to serialize item " + item.getType() + ", storing as air", e);
             return new byte[0];
         }
         return bos.toByteArray();
     }
 
+    /**
+     * Version-tolerant deserialization: Bukkit NBT is not guaranteed stable
+     * across Minecraft versions (e.g. 1.21.5 vs 1.21.11 component changes), so
+     * unknown/corrupt blobs gracefully downgrade to air instead of throwing.
+     * Callers must treat air as "unknown item on this version".
+     */
     public static org.bukkit.inventory.ItemStack deserializeItem(byte[] data) {
         if (data == null || data.length == 0) {
             return org.bukkit.inventory.ItemStack.empty();
@@ -111,9 +160,32 @@ public final class EquipmentRecorder implements Listener {
             org.bukkit.util.io.BukkitObjectInputStream in =
                     new org.bukkit.util.io.BukkitObjectInputStream(new java.io.ByteArrayInputStream(data));
             Object obj = in.readObject();
-            if (obj instanceof org.bukkit.inventory.ItemStack item) return item;
-        } catch (Exception ignored) {
+            if (obj instanceof org.bukkit.inventory.ItemStack item) {
+                if (!isValidDeserialized(item)) {
+                    org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                            "EchoReplay: deserialized item failed validation, downgrading to air");
+                    return org.bukkit.inventory.ItemStack.empty();
+                }
+                return item;
+            }
+        } catch (Exception e) {
+            org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: could not deserialize item blob (" + data.length
+                            + " bytes, likely cross-version NBT), downgrading to air", e);
         }
         return org.bukkit.inventory.ItemStack.empty();
+    }
+
+    /** Validate a deserialized stack (null type / bad amount = corrupt). */
+    public static boolean isValidDeserialized(org.bukkit.inventory.ItemStack item) {
+        if (item == null) return false;
+        try {
+            if (item.getType() == null) return false;
+            if (item.getType() == org.bukkit.Material.AIR) return true;
+            int amt = item.getAmount();
+            return amt > 0 && amt <= 99;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

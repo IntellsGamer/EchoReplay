@@ -25,8 +25,8 @@ mvn -DskipTests clean package
 
 | artifact | Paper | PacketEvents |
 |----------|-------|--------------|
-| `1.21.5/target/echoreplay-1.21.5+1.1.1.jar` | 1.21.5 | 2.8.0 |
-| `1.21.11/target/echoreplay-1.21.11+1.1.1.jar` | 1.21.11 | 2.13.0 |
+| `1.21.5/target/echoreplay-1.21.5+1.1.2.jar` | 1.21.5 | 2.8.0 |
+| `1.21.11/target/echoreplay-1.21.11+1.1.2.jar` | 1.21.11 | 2.13.0 |
 
 ## Commands
 

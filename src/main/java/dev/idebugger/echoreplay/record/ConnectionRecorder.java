@@ -113,7 +113,7 @@ public final class ConnectionRecorder implements Listener {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         return new PlayerSkin(null, null);
     }

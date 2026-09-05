@@ -52,6 +52,10 @@ public final class RecordingManager {
     private int maxDurationMinutes = 30;
     private int maxAgeDays = 0;
     private boolean recIndicator = true;
+    /** Cap for high-volume events per second (0 = unlimited). See EventSink. */
+    private int maxEventsPerSecond = 8000;
+    /** Rotate the crash checkpoint once it exceeds this many MB (0 = never). */
+    private int checkpointRotateMb = 256;
     // Players currently shown the red REC bossbar (shown while inside the
     // recording cuboid, hidden on leave/stop).
     private final Map<java.util.UUID, org.bukkit.boss.BossBar> recBars = new java.util.HashMap<>();
@@ -78,6 +82,8 @@ public final class RecordingManager {
         maxDurationMinutes = config.getInt("recording.max-duration-minutes", 30);
         maxAgeDays = config.getInt("storage.max-age-days", 0);
         recIndicator = config.getBoolean("recording.rec-indicator", true);
+        maxEventsPerSecond = config.getInt("recording.max-events-per-second", 8000);
+        checkpointRotateMb = config.getInt("storage.checkpoint-rotate-mb", 256);
         recordingsDir = new File(plugin.getDataFolder(), config.getString("storage.directory", "recordings"));
         recordingsDir.mkdirs();
         regionDiffRecorder.configure(config.getInt("recording.scan-interval-ticks", 1));
@@ -155,7 +161,7 @@ public final class RecordingManager {
                 if (!p.getWorld().getUID().equals(world.getUID())) continue;
                 if (!cuboid.contains(p.getLocation().getBlockX(), p.getLocation().getBlockY(),
                         p.getLocation().getBlockZ())) continue;
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                 continue;
             }
             inside.add(p.getUniqueId());
@@ -168,7 +174,7 @@ public final class RecordingManager {
             }
             try {
                 if (!bar.getPlayers().contains(p)) bar.addPlayer(p);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         java.util.Iterator<java.util.Map.Entry<java.util.UUID, org.bukkit.boss.BossBar>> it =
@@ -179,7 +185,7 @@ public final class RecordingManager {
             try {
                 Player p = org.bukkit.Bukkit.getPlayer(en.getKey());
                 if (p != null) en.getValue().removePlayer(p);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
             it.remove();
         }
@@ -190,7 +196,7 @@ public final class RecordingManager {
             try {
                 Player p = org.bukkit.Bukkit.getPlayer(en.getKey());
                 if (p != null) en.getValue().removePlayer(p);
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         recBars.clear();
@@ -215,10 +221,10 @@ public final class RecordingManager {
                     n++;
                     try {
                         plugin.recordingIndex().remove(name);
-                    } catch (Exception ignored) {
+                    } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
             }
         }
         if (n > 0) plugin.getLogger().info("Pruned " + n + " recordings older than " + maxAgeDays + " days.");
@@ -314,7 +320,7 @@ public final class RecordingManager {
                     }
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         return new PlayerSkin(null, null);
     }
@@ -375,6 +381,12 @@ public final class RecordingManager {
     private void flushCheckpoint(RecordingSession s) {
         List<TimelineEvent> batch = s.sink().drainAll();
         if (batch.isEmpty()) return;
+        long dropped = s.sink().getDroppedEvents();
+        if (dropped > 0) {
+            plugin.getLogger().fine("EchoReplay: rate limiter dropped " + dropped
+                    + " non-critical events for '" + s.name() + "' (max-events-per-second="
+                    + s.sink().getMaxEventsPerSecond() + ")");
+        }
         s.addCommitted(batch);
         GzipRecordingWriter w = s.checkpointWriter();
         if (w == null) return; // snapshot not complete yet — nothing to anchor
@@ -396,6 +408,58 @@ public final class RecordingManager {
                 w.flush();
             } catch (Exception e) {
                 plugin.getLogger().warning("Checkpoint flush failed: " + e);
+                return;
+            }
+        }
+        rotateCheckpointIfNeeded(s);
+    }
+
+    /**
+     * Seal the live checkpoint once it exceeds
+     * {@code storage.checkpoint-rotate-mb} and start a fresh one, so a long
+     * dynamic recording cannot grow a multi-GB .partial file. The sealed
+     * generation is kept for crash recovery (merged in order) and deleted on
+     * clean stop/cancel. Runs on the IO thread after each flush.
+     */
+    private void rotateCheckpointIfNeeded(RecordingSession s) {
+        if (checkpointRotateMb <= 0) return;
+        File live = s.checkpointFile();
+        if (live == null || !live.exists()) return;
+        long limit = (long) checkpointRotateMb * 1024L * 1024L;
+        if (live.length() < limit) return;
+        synchronized (s.checkpointLock()) {
+            try {
+                s.closeCheckpointWriter();
+                int gen = s.checkpointGeneration() + 1;
+                File sealed = new File(live.getParentFile(), live.getName() + ".rot" + gen);
+                if (!live.renameTo(sealed)) {
+                    // Could not seal — reopen live and keep going (bounded risk).
+                    s.openCheckpointWriter(live);
+                    return;
+                }
+                s.noteRotatedCheckpoint(sealed);
+                plugin.getLogger().info("Rotated checkpoint '" + s.name() + "' to "
+                        + sealed.getName() + " (" + (live.length() / 1024 / 1024) + " MB sealed).");
+                // Fresh live file with the immutable header so it is
+                // independently recoverable.
+                s.setCheckpointFile(live);
+                s.openCheckpointWriter(live);
+                GzipRecordingWriter w = s.checkpointWriter();
+                if (w != null) {
+                    Cuboid c = s.cuboid();
+                    w.writeMeta(plugin.getServer().getMinecraftVersion(), s.world().getUID(), s.world().getName(),
+                            c.min().x(), c.min().y(), c.min().z(), c.max().x(), c.max().y(), c.max().z(),
+                            s.startedMillis(), s.recorderUuid(), s.recorderName(), 0L, s.name());
+                    PalettedStorage st = s.snapshotStorage();
+                    w.writeBlocks(st.sizeX(), st.sizeY(), st.sizeZ(), st.raw(), bitsFor(s.snapshotPalette().size()));
+                    w.writeBlockNbt(packSnapNbt(st, s.snapshotNbt()));
+                    w.writeEntities(new byte[0]);
+                    w.writePalette(s.snapshotPalette());
+                    s.setLastCheckpointPaletteSize(s.snapshotPalette().size());
+                    w.flush();
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("Checkpoint rotation failed: " + e);
             }
         }
     }
@@ -470,6 +534,7 @@ public final class RecordingManager {
 
         session = new RecordingSession(player.getWorld(), cuboid, name, player.getUniqueId(), player.getName());
         session.setTotalSections(cuboid.sections().size());
+        session.sink().setMaxEventsPerSecond(maxEventsPerSecond);
         pendingSections = cuboid.sections().toArray(new Cuboid.Section[0]);
         pendingIndex = 0;
         snapCursor = 0;
@@ -491,6 +556,12 @@ public final class RecordingManager {
         s.closeCheckpointWriter();
         File cp = s.checkpointFile();
         if (cp != null) cp.delete();
+        for (File rot : s.rotatedCheckpoints()) {
+            try { rot.delete(); } catch (Exception e) {
+                plugin.getLogger().log(java.util.logging.Level.FINE,
+                        "EchoReplay: could not delete rotated checkpoint " + rot.getName(), e);
+            }
+        }
         return "<green>Cancelled recording '" + s.name() + "'.</green>";
     }
 
@@ -541,6 +612,14 @@ public final class RecordingManager {
                 s.closeCheckpointWriter();
                 File cp = s.checkpointFile();
                 if (!keep && cp != null) cp.delete();
+                if (!keep) {
+                    for (File rot : s.rotatedCheckpoints()) {
+                        try { rot.delete(); } catch (Exception ex) {
+                            plugin.getLogger().log(java.util.logging.Level.FINE,
+                                    "EchoReplay: could not delete rotated checkpoint " + rot.getName(), ex);
+                        }
+                    }
+                }
             } catch (IOException e) {
                 // Keep the checkpoint as a safety net; it is recovered on next start.
                 plugin.getLogger().warning("Failed to write recording '" + fname + "': " + e.getMessage()
@@ -594,7 +673,7 @@ public final class RecordingManager {
                 out.writeInt(e.getValue().length);
                 out.write(e.getValue());
             }
-        } catch (IOException ignored) {
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
         }
         return bos.toByteArray();
     }
@@ -610,7 +689,9 @@ public final class RecordingManager {
     /**
      * Crash recovery: on start, turn leftover checkpoint files into real
      * recordings (duration recomputed from the last surviving event), or clean
-     * up stale ones whose final file already exists. Runs on the IO thread.
+     * up stale ones whose final file already exists. Rotated generations
+     * ({@code .partial.rot<N>}) are merged in order after the live
+     * {@code .partial}. Runs on the IO thread.
      */
     public void recoverCrashedCheckpoints() {
         File dir = recordingsDir;
@@ -623,17 +704,53 @@ public final class RecordingManager {
                 try {
                     if (finalFile.exists()) {
                         partial.delete(); // final recording already saved — stale checkpoint
+                        // Also drop stale rotations for this recording.
+                        File[] stale = dir.listFiles((d, n) -> n.startsWith(partial.getName() + ".rot"));
+                        if (stale != null) for (File s : stale) s.delete();
                         continue;
                     }
-                    GzipRecordingReader r = GzipRecordingReader.readLenient(new BufferedInputStream(new FileInputStream(partial)));
-                    if (r == null || r.meta() == null) {
+                    // Live + rotated generations, oldest first.
+                    List<File> gens = new ArrayList<>();
+                    gens.add(partial);
+                    File[] rots = dir.listFiles((d, n) -> n.startsWith(partial.getName() + ".rot"));
+                    if (rots != null) {
+                        java.util.Arrays.sort(rots, Comparator.comparing(File::getName));
+                        gens.addAll(java.util.Arrays.asList(rots));
+                    }
+                    List<TimelineEvent> events = new ArrayList<>();
+                    GzipRecordingReader first = null;
+                    for (File g : gens) {
+                        try {
+                            GzipRecordingReader r = GzipRecordingReader.readLenient(
+                                    new BufferedInputStream(new FileInputStream(g)));
+                            if (r == null || r.meta() == null) {
+                                plugin.getLogger().warning("Checkpoint " + g.getName()
+                                        + " has no complete header — skipping generation.");
+                                continue;
+                            }
+                            if (first == null) first = r;
+                            else {
+                                // Later generations reuse the same snapshot; only
+                                // their timeline tails matter.
+                                events.addAll(r.timeline());
+                                r.releaseFragments();
+                                continue;
+                            }
+                            events.addAll(r.timeline());
+                        } catch (Exception ex) {
+                            plugin.getLogger().warning("Checkpoint generation " + g.getName()
+                                    + " unreadable, skipping: " + ex);
+                        }
+                    }
+                    if (first == null || first.meta() == null) {
                         plugin.getLogger().warning("Checkpoint " + partial.getName()
                                 + " has no complete header — keeping for manual recovery.");
                         continue;
                     }
+                    GzipRecordingReader r = first;
                     MetaParser.Parsed meta = MetaParser.parse(r.meta());
-                    List<TimelineEvent> events = r.timeline();
                     r.releaseFragments();
+                    events.sort(Comparator.comparingLong(TimelineEvent::tickMillis));
                     long duration = events.isEmpty() ? 0 : events.get(events.size() - 1).tickMillis();
                     String name = meta.name() != null && !meta.name().isEmpty()
                             ? meta.name() : finalFile.getName().replace(".echoreplay.gz", "");
@@ -646,7 +763,11 @@ public final class RecordingManager {
                             duration, finalFile.length(), meta.epochMillis(),
                             meta.cuboid().min().x(), meta.cuboid().min().y(), meta.cuboid().min().z(),
                             meta.cuboid().max().x(), meta.cuboid().max().y(), meta.cuboid().max().z()));
-                    if (!plugin.cfg().getBoolean("storage.keep-partial-on-crash", true)) partial.delete();
+                    if (!plugin.cfg().getBoolean("storage.keep-partial-on-crash", true)) {
+                        partial.delete();
+                        File[] rotsCleanup = dir.listFiles((d, n) -> n.startsWith(partial.getName() + ".rot"));
+                        if (rotsCleanup != null) for (File s : rotsCleanup) s.delete();
+                    }
                     plugin.getLogger().info("Recovered crashed recording '" + name + "' ("
                             + events.size() + " events, " + formatDuration(duration) + ").");
                 } catch (Exception e) {

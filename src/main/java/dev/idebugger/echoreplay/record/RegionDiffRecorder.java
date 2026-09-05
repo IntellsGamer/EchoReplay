@@ -73,6 +73,24 @@ public final class RegionDiffRecorder {
         int ticks = Math.max(1, Math.min(20, intervalTicks));
         this.passDelayMs = ticks * 50L;
         Nms.logState();
+        if (!Nms.available()) {
+            try {
+                plugin.getLogger().warning("RegionDiff NMS unavailable (" + Nms.describe()
+                        + ") — diff scanner disabled, falling back to Bukkit ChunkSnapshot path. "
+                        + "Run /er debug nms for details. Event-driven recorders still cover common cases.");
+            } catch (Exception e) {
+                org.bukkit.Bukkit.getLogger().warning("RegionDiff NMS unavailable — event-only recording.");
+            }
+        }
+    }
+
+    /** One-line NMS diagnostics for /er debug nms (no server internals leaked). */
+    public static String describeNms() {
+        return Nms.describe();
+    }
+
+    public static boolean isNmsAvailable() {
+        return Nms.available();
     }
 
     public boolean isActive() { return active; }
@@ -87,7 +105,7 @@ public final class RegionDiffRecorder {
         long ms = 12L;
         try {
             ms = plugin.cfg().getLong("recording.scan-ms-per-pass", 12L);
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         if (ms < 1) ms = 1;
         if (ms > 40) ms = 40;
@@ -132,7 +150,7 @@ public final class RegionDiffRecorder {
         try {
             double[] tps = plugin.getServer().getTPS();
             if (tps != null && tps.length > 0 && tps[0] < 17.0) return;
-        } catch (Exception ignored) {
+        } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);
         }
         try {
             scanAsync(s);
@@ -146,7 +164,9 @@ public final class RegionDiffRecorder {
         Cuboid c = s.cuboid();
         Object handle = Nms.handle(s.world());
         if (handle == null) {
-            active = false; // NMS unavailable -> disable gracefully
+            // NMS unavailable -> stable Paper ChunkSnapshot/Bukkit fallback
+            // instead of silently disabling the feature. Slower, but version-proof.
+            scheduleBukkitFallbackScan(s);
             return;
         }
         int minX = c.min().x(), minY = c.min().y(), minZ = c.min().z();
@@ -199,6 +219,88 @@ public final class RegionDiffRecorder {
                 enqueueEmit(s, x, y, z, str);
             }
             if ((++n & 1023) == 0 && System.nanoTime() >= deadline) break;
+        }
+    }
+
+    /**
+     * Stable fallback when NMS reflection cannot resolve (Paper updates rename
+     * classes/methods frequently). Uses only Bukkit API
+     * ({@code World.getBlockAt}) on the main thread — slower than NMS chunk
+     * reads, but immune to renames. Budgeted per pass so it cannot stall ticks.
+     * Coalesced: at most one fallback scan task is queued at a time.
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean fallbackScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile int fallbackCursor = 0;
+
+    private void scheduleBukkitFallbackScan(RecordingSession s) {
+        if (!fallbackScheduled.compareAndSet(false, true)) return;
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                try {
+                    fallbackScanMainThread(s);
+                } finally {
+                    fallbackScheduled.set(false);
+                }
+            });
+        } catch (Exception e) {
+            fallbackScheduled.set(false);
+            plugin.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: fallback diff scheduling failed", e);
+        }
+    }
+
+    private void fallbackScanMainThread(RecordingSession s) {
+        if (!active || s == null) return;
+        Cuboid c = s.cuboid();
+        World w;
+        try {
+            w = s.world();
+        } catch (Exception e) {
+            plugin.getLogger().log(java.util.logging.Level.FINE,
+                    "EchoReplay: fallback diff has no world", e);
+            return;
+        }
+        int minX = c.min().x(), minY = c.min().y(), minZ = c.min().z();
+        int sx = c.max().x() - minX + 1;
+        int sy = c.max().y() - minY + 1;
+        int sz = c.max().z() - minZ + 1;
+        long vol = (long) sx * sy * sz;
+        if (vol <= 0 || vol > Integer.MAX_VALUE) return;
+        if (fallbackCursor < 0 || (long) fallbackCursor >= vol) fallbackCursor = 0;
+        // Small budget: fallback is correctness net, not full-time scanner.
+        long deadline = System.nanoTime() + Math.min(scanBudgetNanos, 4_000_000L);
+        int n = 0;
+        // Cap cells per pass so huge regions stream without tick spikes.
+        int cap = 2048;
+        while ((long) fallbackCursor < vol && n < cap) {
+            int i = fallbackCursor++;
+            int dx = i % sx;
+            int dz = (i / sx) % sz;
+            int dy = i / (sx * sz);
+            int x = minX + dx, y = minY + dy, z = minZ + dz;
+            String str;
+            try {
+                var bd = w.getBlockAt(x, y, z).getBlockData();
+                str = bd == null ? "minecraft:air" : bd.getAsString(true);
+            } catch (Exception e) {
+                plugin.getLogger().log(java.util.logging.Level.FINE,
+                        "EchoReplay: fallback block read failed at " + x + "," + y + "," + z, e);
+                continue;
+            }
+            long key = (((long) (x + 1048576) & 0x1FFFFF) << 42)
+                    | (((long) (z + 1048576) & 0x1FFFFF) << 21)
+                    | ((long) (y + 64) & 0x1FFFFF);
+            byte[] enc = str.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            byte[] prev = lastSeen.get(key);
+            if (prev == null) {
+                lastSeen.put(key, enc);
+            } else if (!java.util.Arrays.equals(prev, enc)) {
+                lastSeen.put(key, enc);
+                enqueueEmit(s, x, y, z, str);
+            }
+            n++;
+            if ((n & 255) == 0 && System.nanoTime() >= deadline) break;
         }
     }
 
@@ -336,7 +438,7 @@ public final class RegionDiffRecorder {
                             }
                         }
                         if (resolved) break;
-                    } catch (Throwable ignored) {
+                    } catch (Throwable ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Throwable", ignored);
                     }
                 }
                 // BlockStateParser.serialize(BlockState) -> "minecraft:xxx[props]"
@@ -358,7 +460,7 @@ public final class RegionDiffRecorder {
                                 serializeState = m;
                                 break;
                             }
-                        } catch (Throwable ignored) {
+                        } catch (Throwable ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Throwable", ignored);
                         }
                     }
                 }
@@ -377,7 +479,7 @@ public final class RegionDiffRecorder {
                                 .getMethod("unwrapKey");
                         stateGetProperties = stateClass.getMethod("getProperties");
                         stateGetValues = stateClass.getMethod("getValues");
-                    } catch (Throwable ignored) {
+                    } catch (Throwable ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Throwable", ignored);
                         stateGetBlock = null;
                     }
                 }
@@ -388,6 +490,24 @@ public final class RegionDiffRecorder {
         static boolean available() {
             resolve();
             return worldGetChunk != null && chunkGetBlockState != null;
+        }
+
+        /** One-line diagnostics for /er debug nms (safe to show ops). */
+        static String describe() {
+            resolve();
+            String world = worldGetChunk != null
+                    ? worldGetChunk.getDeclaringClass().getName() + "#" + worldGetChunk.getName() + "(int,int)"
+                    : "unresolved";
+            String chunk = chunkGetBlockState != null
+                    ? chunkGetBlockState.getDeclaringClass().getSimpleName() + "#"
+                            + chunkGetBlockState.getName() + "(int,int,int)"
+                    : "unresolved";
+            String ser = serializeState != null ? "BlockStateParser.serialize"
+                    : (stateGetBlock != null ? "direct(Block/StateHolder/Property)"
+                    : "toString-fallback");
+            String key = "ResourceKey." + (keyLocation != null ? keyLocation.getName() : "location/identifier?");
+            return "world=" + world + " chunk=" + chunk + " serialize=" + ser + " " + key
+                    + (available() ? " OK" : " UNAVAILABLE(fallback active)");
         }
 
         /** Log which reflective accessors resolved, for debugging on live setups. */
@@ -436,14 +556,14 @@ public final class RegionDiffRecorder {
                     Object str = serializeState.invoke(null, state);
                     if (str instanceof String s) return s;
                 }
-            } catch (Throwable ignored) {
+            } catch (Throwable ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Throwable", ignored);
             }
             // 2) Direct serializer: byte-identical format to vanilla
             // serialize(), no command-parser dependency.
             try {
                 String direct = directSerialize(state);
                 if (direct != null) return direct;
-            } catch (Throwable ignored) {
+            } catch (Throwable ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Throwable", ignored);
             }
             // 3) Last resort: whatever the state prints as.
             try {

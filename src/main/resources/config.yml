@@ -3,7 +3,7 @@
 # Config version — raised when defaults change meaning. On enable, old files
 # are backed up to config.yml.bak, missing keys are filled in, and changed
 # defaults are applied (logged). Never delete this key.
-config-version: 2
+config-version: 3
 #
 # Selection
 selection:
@@ -35,6 +35,11 @@ recording:
   capture-particles: true
   # Drop particles above this per-media-second rate (0 = unlimited)
   max-particles-per-second: 400
+  # Cap high-volume recording events (movement/particle/sound) per wall-clock
+  # second. Critical events (blocks, spawns, inventory, markers) are never
+  # dropped; movement is sampled when over budget. Prevents OOM on busy
+  # servers (20 players x 20 ticks = thousands of events/sec). 0 = unlimited.
+  max-events-per-second: 8000
   # Record world time changes (driven back during replay if replay.drive-world-time)
   capture-time: true
   # Hard stop after this many minutes of recorded media time
@@ -92,6 +97,11 @@ storage:
   # Delete recordings (and their leftover checkpoints) older than this many
   # days on plugin start and after each save. 0 = keep forever.
   max-age-days: 0
+  # Seal and rotate the crash-safety checkpoint (.partial) once it exceeds
+  # this many MB, starting a fresh .partial (.partial.rot<N> kept for
+  # recovery, deleted on clean stop). Bounds disk use on long dynamic
+  # recordings. 0 = never rotate.
+  checkpoint-rotate-mb: 256
   # Delete the crash-safety checkpoint (.partial) right after a successful
   # save. The checkpoint is a raw uncompressed file, so it looks much bigger
   # than the final recording next to it. true = keep it as an extra safety

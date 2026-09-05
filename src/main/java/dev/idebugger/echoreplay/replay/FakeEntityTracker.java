@@ -33,17 +33,37 @@ public final class FakeEntityTracker {
     /**
      * Fake entity ids allocate downward from just below MAX_VALUE, far above
      * any id a real server assigns (those start at 1 and grow by 1). The band
-     * is 1,000,000 ids wide; when it exhausts, {@link #isExhausted()} lets the
-     * session skip further spawns instead of wrapping into real entity ids.
+     * is 1,000,000 ids wide; freed ids are recycled via {@link #forget(int)}
+     * so long recordings with churn (respawns, projectiles, crystals) cannot
+     * exhaust the band mid-replay.
      */
     public static final int ID_START = Integer.MAX_VALUE - 1_000_000;
+    public static final int ID_BAND_SIZE = 1_000_000;
+    public static final int ID_MIN = ID_START - ID_BAND_SIZE;
     private final AtomicInteger nextId = new AtomicInteger(ID_START);
+    /** Recycled ids returned by {@link #forget(int)}, reused first. */
+    private final java.util.Deque<Integer> freeIds = new java.util.ArrayDeque<>();
 
     public FakeEntityTracker() {
     }
 
-    public int allocateId() {
+    /** Allocate an id, preferring recycled ids before consuming fresh band. */
+    public synchronized int allocateId() {
+        Integer reused = freeIds.pollFirst();
+        if (reused != null) return reused;
         return nextId.getAndDecrement();
+    }
+
+    /**
+     * Release an id back to the pool for reuse. Called when a fake entity is
+     * destroyed; safe to call twice (second call is a no-op for move state,
+     * but the id is only recycled once per destroy path — callers must call
+     * once per allocate).
+     */
+    public synchronized void release(int runtimeId) {
+        // Only recycle ids from our own band; never recycle real entity ids.
+        if (runtimeId > ID_START || runtimeId < ID_MIN) return;
+        if (!freeIds.contains(runtimeId)) freeIds.addLast(runtimeId);
     }
 
     /**
@@ -61,17 +81,30 @@ public final class FakeEntityTracker {
     }
 
     /** Drop move state for one fake (called once per destroyFor, not per viewer). */
-    public void forget(int runtimeId) {
+    public synchronized void forget(int runtimeId) {
         lastPos.remove(runtimeId);
+        release(runtimeId);
     }
 
     private void seed(int runtimeId, Vec3d pos) {
         lastPos.put(runtimeId, new double[]{pos.x(), pos.y(), pos.z()});
     }
 
-    /** True once the high id band is used up (spawning must stop). */
-    public boolean isExhausted() {
-        return nextId.get() < 0;
+    /** True once the high id band is used up and no recycled ids remain. */
+    public synchronized boolean isExhausted() {
+        return freeIds.isEmpty() && nextId.get() < ID_MIN;
+    }
+
+    /** Number of recycled ids currently available for reuse (debug). */
+    public synchronized int recycledAvailable() {
+        return freeIds.size();
+    }
+
+    /** Human-readable allocator state for /er debug nms-style diagnostics. */
+    public synchronized String describe() {
+        return "ids next=" + nextId.get() + " recycled=" + freeIds.size()
+                + " band=[" + ID_MIN + ".." + ID_START + "]"
+                + (isExhausted() ? " EXHAUSTED" : "");
     }
 
     private static void send(Player viewer, com.github.retrooper.packetevents.wrapper.PacketWrapper<?> wrapper) {

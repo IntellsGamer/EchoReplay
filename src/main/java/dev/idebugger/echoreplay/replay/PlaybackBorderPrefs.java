@@ -55,7 +55,7 @@ public final class PlaybackBorderPrefs {
         List<String> list = cfg.getStringList("disabled");
         if (!list.isEmpty()) {
             for (String s : list) {
-                try { disabled.add(UUID.fromString(s)); } catch (Exception ignored) {}
+                try { disabled.add(UUID.fromString(s)); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
             }
             return;
         }
@@ -68,7 +68,7 @@ public final class PlaybackBorderPrefs {
                 for (String uuid : cfg.getConfigurationSection("players").getKeys(false)) {
                     boolean enabled = cfg.getBoolean("players." + uuid + ".borderEnabled", true);
                     if (!enabled) {
-                        try { disabled.add(UUID.fromString(uuid)); } catch (Exception ignored) {}
+                        try { disabled.add(UUID.fromString(uuid)); } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
                     }
                 }
             }
@@ -80,7 +80,7 @@ public final class PlaybackBorderPrefs {
                     UUID id = UUID.fromString(key);
                     boolean enabled = cfg.getBoolean(key, true);
                     if (!enabled) disabled.add(id);
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
             }
         }
     }
@@ -92,6 +92,6 @@ public final class PlaybackBorderPrefs {
         try {
             file.getParentFile().mkdirs();
             cfg.save(file);
-        } catch (IOException ignored) {}
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);}
     }
 }

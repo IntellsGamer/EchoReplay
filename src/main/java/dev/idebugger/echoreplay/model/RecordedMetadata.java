@@ -109,7 +109,7 @@ public final class RecordedMetadata {
                 out.writeInt(undead ? 1 : -24000);
                 count++;
             }
-        } catch (IOException ignored) {
+        } catch (IOException ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed IOException", ignored);
             return null;
         }
         if (count == 0) return null;
