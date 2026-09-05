@@ -66,6 +66,11 @@ public final class EventSink {
         return queue.poll();
     }
 
+    /** Buffered (not yet flushed) event count — for /er stats. */
+    public int size() {
+        return queue.size();
+    }
+
     /** Take ownership of every buffered event (checkpoint flush / final save). */
     public List<TimelineEvent> drainAll() {
         List<TimelineEvent> out = new ArrayList<>();

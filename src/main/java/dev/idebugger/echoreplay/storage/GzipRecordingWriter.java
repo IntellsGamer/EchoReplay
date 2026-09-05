@@ -36,6 +36,10 @@ public final class GzipRecordingWriter implements AutoCloseable {
 
     /** @param gzipped false for raw checkpoint streams (no gzip framing). */
     public GzipRecordingWriter(java.io.OutputStream raw, boolean gzipped) throws IOException {
+        this(raw, gzipped, true);
+    }
+
+    private GzipRecordingWriter(java.io.OutputStream raw, boolean gzipped, boolean writeHeader) throws IOException {
         if (gzipped) {
             // Best compression: final writes run on the IO thread and files
             // are small, so trade a few ms of CPU for a smaller recording.
@@ -48,6 +52,7 @@ public final class GzipRecordingWriter implements AutoCloseable {
             this.gzip = null;
             this.out = new DataOutputStream(raw);
         }
+        if (!writeHeader) return;
         // magic
         out.writeByte('E');
         out.writeByte('C');
@@ -59,6 +64,15 @@ public final class GzipRecordingWriter implements AutoCloseable {
         // flags u16 LE = 0
         out.writeByte(0);
         out.writeByte(0);
+    }
+
+    /**
+     * Headerless raw appender for resume: continues an existing checkpoint
+     * section stream without emitting a second magic header (the lenient
+     * reader concatenates sections across the whole file).
+     */
+    public static GzipRecordingWriter appendRaw(java.io.OutputStream raw) throws IOException {
+        return new GzipRecordingWriter(raw, false, false);
     }
 
     /**

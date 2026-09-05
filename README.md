@@ -44,10 +44,15 @@ mvn -DskipTests clean package
 **Recording**
 - `/er record <name>` — snapshots the region, then records. Region is grown by
   `recording.margin-blocks` on every side (clamped to world height).
+- `/er resume <name>` — continue a checkpointed take after a crash/restart
+  (async incremental autosave every `recording.autosave-seconds` on the IO
+  thread — never Netty, so saves can't disconnect players).
 - `/er marker [name]` — place a seek target
 - `/er stop` (or `/er save`) — finish and save
 - `/er cancel` — abort and delete
 - `/er status` — progress (sections, duration) while recording
+- `/er stats` — recording/playback debug (buffered/committed/dropped events,
+  rate limit, palette, checkpoint sizes, diff mode, fake ids, virtual blocks)
 - While recording, a **crash-safety checkpoint** (`<name>.echoreplay.gz.partial`)
   is kept on disk; if the server dies, the next start recovers it as a real
   recording (at most `recording.flush-seconds` of events can be lost).
@@ -95,6 +100,8 @@ mvn -DskipTests clean package
 | `echoreplay.select` | op | `pos1`, `pos2`, `select`, `expand`, `contract`, `shift` |
 | `echoreplay.record` | op | `record`, `stop`, `save`, `cancel`, `marker` |
 | `echoreplay.play` | op | `play`, `watch` (also required for auto-watch), `spectate`, `stopspectate` |
+| `echoreplay.play.*` | op | play any recording (wildcard parent) |
+| `echoreplay.play.<name>` | op | play one recording (lowercase name; `*` = all) |
 | `echoreplay.control` | op | `pause`, `resume`, `speed`, `seek`, `ff`, `rewind`, `stopplay`, `leave` |
 | `echoreplay.delete` | op | `delete`, `rename`, `confirm` |
 | `echoreplay.border` | true | `border` |

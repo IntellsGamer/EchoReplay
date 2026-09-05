@@ -189,6 +189,16 @@ public final class ReplaySession {
     public Clock clock() { return clock; }
     public boolean started() { return started; }
     public double durationMs() { return timeline.isEmpty() ? 0 : timeline.get(timeline.size() - 1).tickMillis(); }
+    /** Applied event cursor — for /er stats. */
+    public int appliedIndex() { return appliedIndex; }
+    /** Total timeline events — for /er stats. */
+    public int timelineSize() { return timeline.size(); }
+    /** Current viewer count — for /er stats. */
+    public int viewerCount() { return viewers.size(); }
+    /** Distinct virtual blocks tracked — for /er stats. */
+    public int virtualSnapshotSize() { return virtualBlockState.size(); }
+    /** Fake-entity allocator state — for /er stats. */
+    public String fakeIdsDescribe() { return fakes.describe(); }
 
     public void addViewer(Player p) {
         if (!viewers.contains(p.getUniqueId())) {
@@ -1065,12 +1075,23 @@ public final class ReplaySession {
         }
         BlockData data = cache.get(pi);
         if (data != null) return data;
+        String raw = pal.get(pi);
         try {
-            data = Bukkit.createBlockData(pal.get(pi));
+            // Cross-version: unknown 1.21.11 blocks fall back to an appropriate
+            // visible substitute (never air holes) instead of skipping.
+            data = dev.idebugger.echoreplay.util.CrossVersion.blockStateOrFallback(raw);
         } catch (Exception ex) {
             if (warnedBadPalette.add(pi)) {
                 EchoReplay.getPlugin(EchoReplay.class).getLogger()
                         .warning("BlockSet apply failed palette=" + pi + " size=" + pal.size() + " " + ex);
+            }
+            return null;
+        }
+        if (data == null) {
+            if (warnedBadPalette.add(pi)) {
+                EchoReplay.getPlugin(EchoReplay.class).getLogger()
+                        .warning("BlockSet apply failed palette=" + pi + " size=" + pal.size()
+                                + " raw=" + raw + " (unresolvable even with fallback)");
             }
             return null;
         }

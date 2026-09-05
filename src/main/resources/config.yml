@@ -27,6 +27,12 @@ recording:
   # checkpoint file (name.echoreplay.gz.partial). A crash mid-recording can
   # lose at most this many seconds.
   flush-seconds: 15
+  # Incremental autosave: every N seconds the IO thread fsyncs the checkpoint
+  # and writes name.autosave.json (media time, event counts) so /er resume can
+  # continue a recording after a crash/restart instead of finalizing it.
+  # Runs fully async on the IO executor — never main, never Netty (blocking
+  # Netty disconnects players). 0 = off (checkpoint recovery still works).
+  autosave-seconds: 60
   # Record chat messages of players in the region
   capture-chat: true
   # Record sound effects sent to clients inside the region

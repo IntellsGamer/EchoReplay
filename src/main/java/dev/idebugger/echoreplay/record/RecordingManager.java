@@ -56,6 +56,8 @@ public final class RecordingManager {
     private int maxEventsPerSecond = 8000;
     /** Rotate the crash checkpoint once it exceeds this many MB (0 = never). */
     private int checkpointRotateMb = 256;
+    /** Incremental autosave interval seconds (0 = off). IO thread only. */
+    private int autosaveSeconds = 60;
     // Players currently shown the red REC bossbar (shown while inside the
     // recording cuboid, hidden on leave/stop).
     private final Map<java.util.UUID, org.bukkit.boss.BossBar> recBars = new java.util.HashMap<>();
@@ -63,6 +65,7 @@ public final class RecordingManager {
     private Cuboid.Section[] pendingSections;
     private int pendingIndex = 0;
     private long flushCounterMs = 0;
+    private long autosaveCounterMs = 0;
     private final EquipmentRecorder equipmentRecorder;
     private final EntityTickRecorder entityTickRecorder;
     private final RegionDiffRecorder regionDiffRecorder;
@@ -84,6 +87,7 @@ public final class RecordingManager {
         recIndicator = config.getBoolean("recording.rec-indicator", true);
         maxEventsPerSecond = config.getInt("recording.max-events-per-second", 8000);
         checkpointRotateMb = config.getInt("storage.checkpoint-rotate-mb", 256);
+        autosaveSeconds = config.getInt("recording.autosave-seconds", 60);
         recordingsDir = new File(plugin.getDataFolder(), config.getString("storage.directory", "recordings"));
         recordingsDir.mkdirs();
         regionDiffRecorder.configure(config.getInt("recording.scan-interval-ticks", 1));
@@ -120,6 +124,11 @@ public final class RecordingManager {
     public RegionDiffRecorder regionDiffRecorder() { return regionDiffRecorder; }
 
     public EquipmentRecorder equipmentRecorder() { return equipmentRecorder; }
+
+    public int getMaxEventsPerSecond() { return maxEventsPerSecond; }
+    public int getCheckpointRotateMb() { return checkpointRotateMb; }
+    public int getAutosaveSeconds() { return autosaveSeconds; }
+    public int getFlushSeconds() { return flushSeconds; }
 
     public void onTick() {
         if (session == null) {
@@ -358,6 +367,13 @@ public final class RecordingManager {
             flushCounterMs = 0;
             autoFlush();
         }
+        if (autosaveSeconds > 0) {
+            autosaveCounterMs += 50;
+            if (autosaveCounterMs >= autosaveSeconds * 1000L) {
+                autosaveCounterMs = 0;
+                autoSave();
+            }
+        }
         if (session.mediaMillis() / 1000 > maxDurationMinutes * 60L) {
             forceStopAndSave();
         }
@@ -376,6 +392,174 @@ public final class RecordingManager {
                 flushCheckpoint(s);
             }
         });
+    }
+
+    /**
+     * Incremental autosave: fsyncs the checkpoint (via flushCheckpoint) and
+     * writes a tiny {@code name.autosave.json} manifest so {@code /er resume}
+     * can continue the take after a crash/restart.
+     *
+     * <p>Must run on the dedicated IO executor — never the main thread (would
+     * stall ticks) and never a Netty event loop (blocking Netty disconnects
+     * players and drops packets). The tick loop only schedules; all file IO
+     * happens below.
+     */
+    private void autoSave() {
+        RecordingSession s = session;
+        if (s == null) return;
+        plugin.ioExecutor().execute(() -> {
+            if (s.state() != RecordingSession.State.RECORDING) return;
+            try {
+                flushCheckpoint(s);
+                File manifest = new File(recordingsDir, s.name() + ".autosave.json");
+                long buffered = s.sink().size();
+                // Committed count is only mutated on the IO thread (here) and
+                // read on stop — no extra sync needed beyond takeCommitted's.
+                String json = "{\"name\":" + jsonStr(s.name())
+                        + ",\"mediaMillis\":" + s.mediaMillis()
+                        + ",\"paletteSize\":" + s.snapshotPalette().size()
+                        + ",\"checkpoint\":\"" + s.checkpointFile().getName() + "\""
+                        + ",\"buffered\":" + buffered
+                        + ",\"at\":" + System.currentTimeMillis() + "}";
+                java.nio.file.Files.writeString(manifest.toPath(), json,
+                        java.nio.charset.StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.CREATE,
+                        java.nio.file.StandardOpenOption.TRUNCATE_EXISTING);
+                plugin.getLogger().fine("Autosaved recording '" + s.name()
+                        + "' at " + formatDuration(s.mediaMillis()));
+            } catch (Exception e) {
+                plugin.getLogger().log(java.util.logging.Level.FINE,
+                        "EchoReplay: autosave failed for '" + s.name() + "'", e);
+            }
+        });
+    }
+
+    private static String jsonStr(String s) {
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    /**
+     * Resume a recording from its checkpoint/autosave after a crash or restart.
+     * Rebuilds palette, snapshot grid, media clock and committed events, then
+     * reopens the checkpoint in append mode so history is preserved.
+     *
+     * @return null on success (session is live), else a MiniMessage error.
+     */
+    public String resume(org.bukkit.entity.Player player, String name) {
+        if (session != null) {
+            return "<red>Already recording '" + session.name() + "'. Use /er stop first.</red>";
+        }
+        if (!NAME.matcher(name).matches()) {
+            return "<red>Name must match [a-zA-Z0-9_\\-]{1,32}.</red>";
+        }
+        File out = new File(recordingsDir, name + ".echoreplay.gz");
+        if (out.exists()) {
+            return "<red>A finished recording named '" + name + "' already exists.</red>";
+        }
+        File partial = new File(recordingsDir, name + ".echoreplay.gz" + PARTIAL_SUFFIX);
+        if (!partial.exists()) {
+            return "<red>No checkpoint to resume for '" + name + "'.</red>";
+        }
+        try {
+            // Merge live + rotated generations, oldest first.
+            List<File> gens = new ArrayList<>();
+            gens.add(partial);
+            File[] rots = recordingsDir.listFiles((d, n) -> n.startsWith(partial.getName() + ".rot"));
+            if (rots != null) {
+                java.util.Arrays.sort(rots, Comparator.comparing(File::getName));
+                gens.addAll(java.util.Arrays.asList(rots));
+            }
+            List<TimelineEvent> events = new ArrayList<>();
+            GzipRecordingReader first = null;
+            for (File g : gens) {
+                GzipRecordingReader r = GzipRecordingReader.readLenient(
+                        new java.io.BufferedInputStream(new java.io.FileInputStream(g)));
+                if (r == null || r.meta() == null) continue;
+                if (first == null) first = r;
+                else {
+                    events.addAll(r.timeline());
+                    r.releaseFragments();
+                    continue;
+                }
+                events.addAll(r.timeline());
+            }
+            if (first == null || first.meta() == null) {
+                return "<red>Checkpoint for '" + name + "' has no header — cannot resume.</red>";
+            }
+            MetaParser.Parsed meta = MetaParser.parse(first.meta());
+            List<String> palette = first.palette() != null ? first.palette() : List.of("minecraft:air");
+            int[] blockData = first.blockData() != null ? first.blockData() : new int[0];
+            byte[] blockNbtBytes = first.blockNbt();
+            int sx = first.blockSizeX(), sy = first.blockSizeY(), sz = first.blockSizeZ();
+            first.releaseFragments();
+            events.sort(Comparator.comparingLong(TimelineEvent::tickMillis));
+            long duration = events.isEmpty() ? 0 : events.get(events.size() - 1).tickMillis();
+
+            World world = plugin.getServer().getWorld(meta.worldUuid());
+            if (world == null) world = plugin.getServer().getWorld(meta.worldName());
+            if (world == null) {
+                return "<red>World for '" + name + "' is not loaded.</red>";
+            }
+            if (plugin.replayManager().isPlayingIn(world.getUID(), meta.cuboid())) {
+                return "<red>A replay is active in this region — stop it first.</red>";
+            }
+            RecordingSession s = new RecordingSession(world, meta.cuboid(), name,
+                    player.getUniqueId(), player.getName());
+            s.restorePalette(palette);
+            s.restoreSnapshot(sx, sy, sz, blockData, decodeSnapNbt(blockNbtBytes));
+            s.restoreMediaClock(duration);
+            s.addCommitted(events);
+            s.sink().setMaxEventsPerSecond(maxEventsPerSecond);
+            s.setTotalSections(1);
+            s.markSection();
+            s.setRecording();
+            // Pre-register existing rotations so a clean stop deletes them.
+            if (rots != null) for (File r : rots) s.noteRotatedCheckpoint(r);
+            s.setLastCheckpointPaletteSize(palette.size());
+            session = s;
+            pendingSections = new Cuboid.Section[0];
+            pendingIndex = 0;
+            flushCounterMs = 0;
+            autosaveCounterMs = 0;
+            entityTickRecorder.reset();
+            regionDiffRecorder.reset(s);
+            s.setCheckpointFile(partial);
+            s.openCheckpointWriter(partial, true);
+            if (s.checkpointWriter() == null) {
+                session = null;
+                return "<red>Could not reopen checkpoint for '" + name + "'.</red>";
+            }
+            plugin.getLogger().info("Resumed recording '" + name + "' at "
+                    + formatDuration(duration) + " (" + events.size() + " events).");
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("Resume failed for '" + name + "': " + e);
+            return "<red>Resume failed: " + e.getMessage() + "</red>";
+        }
+    }
+
+    /** Decode packSnapNbt bytes back to the relative-pos map (resume path). */
+    private static Map<String, byte[]> decodeSnapNbt(byte[] packed) {
+        Map<String, byte[]> out = new java.util.LinkedHashMap<>();
+        if (packed == null || packed.length < 16) return out;
+        try (java.io.DataInputStream in = new java.io.DataInputStream(
+                new java.io.ByteArrayInputStream(packed))) {
+            in.readInt(); // sx
+            in.readInt(); // sy
+            in.readInt(); // sz
+            int count = in.readInt();
+            for (int i = 0; i < count; i++) {
+                int x = in.readInt(), y = in.readInt(), z = in.readInt();
+                int len = in.readInt();
+                byte[] b = new byte[len];
+                in.readFully(b);
+                out.put(x + "," + y + "," + z, b);
+            }
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE,
+                    "EchoReplay: snapshot NBT decode failed on resume", e);
+        }
+        return out;
     }
 
     private void flushCheckpoint(RecordingSession s) {
@@ -562,6 +746,11 @@ public final class RecordingManager {
                         "EchoReplay: could not delete rotated checkpoint " + rot.getName(), e);
             }
         }
+        try {
+            new File(recordingsDir, s.name() + ".autosave.json").delete();
+        } catch (Exception e) {
+            plugin.getLogger().log(java.util.logging.Level.FINE, "EchoReplay: autosave cleanup failed", e);
+        }
         return "<green>Cancelled recording '" + s.name() + "'.</green>";
     }
 
@@ -619,6 +808,12 @@ public final class RecordingManager {
                                     "EchoReplay: could not delete rotated checkpoint " + rot.getName(), ex);
                         }
                     }
+                }
+                try {
+                    new File(recordingsDir, fname + ".autosave.json").delete();
+                } catch (Exception ex) {
+                    plugin.getLogger().log(java.util.logging.Level.FINE,
+                            "EchoReplay: autosave cleanup failed", ex);
                 }
             } catch (IOException e) {
                 // Keep the checkpoint as a safety net; it is recovered on next start.

@@ -35,6 +35,9 @@ permissions:
   echoreplay.play:
     description: Play replays
     default: op
+  echoreplay.play.*:
+    description: Play any recording (wildcard for per-recording echoreplay.play.<name>)
+    default: op
   echoreplay.control:
     description: Control playback (pause, seek, speed)
     default: op

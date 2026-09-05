@@ -198,6 +198,45 @@ public final class RecordingSession {
         mediaClock.addAndGet(deltaMs);
     }
 
+    /** Restore media time when resuming from an autosave/checkpoint. */
+    public void restoreMediaClock(long ms) {
+        mediaClock.set(Math.max(0, ms));
+    }
+
+    /** Replace the palette with recovered entries (resume path). */
+    public synchronized void restorePalette(java.util.List<String> palette) {
+        paletteIndex.clear();
+        paletteList.clear();
+        if (palette == null || palette.isEmpty()) {
+            paletteIndex.put("minecraft:air", 0);
+            paletteList.add("minecraft:air");
+            return;
+        }
+        for (int i = 0; i < palette.size(); i++) {
+            String s = palette.get(i) != null ? palette.get(i) : "minecraft:air";
+            paletteIndex.putIfAbsent(s, paletteList.size());
+            if (!paletteList.contains(s)) paletteList.add(s);
+        }
+        // Ensure indices match recovered order even with dupes.
+        paletteIndex.clear();
+        for (int i = 0; i < paletteList.size(); i++) paletteIndex.put(paletteList.get(i), i);
+    }
+
+    /**
+     * Restore the initial snapshot grid from recovery (resume path). The
+     * palette must already be restored so indices line up.
+     */
+    public synchronized void restoreSnapshot(int sx, int sy, int sz, int[] data,
+                                             Map<String, byte[]> nbt) {
+        snapshotStorage = new PalettedStorage(sx, sy, sz);
+        // PalettedStorage.ensure("minecraft:air") runs in ctor; align palette.
+        for (String s : paletteList) snapshotStorage.ensure(s);
+        int[] raw = snapshotStorage.raw();
+        if (data != null) System.arraycopy(data, 0, raw, 0, Math.min(data.length, raw.length));
+        snapshotNbt.clear();
+        if (nbt != null) snapshotNbt.putAll(nbt);
+    }
+
     /** Emit a WorldTime event at most once per in-game second (world time
      *  ticks 20x/sec; per-tick events are pure filesize with no visible
      *  difference for time-of-day playback). */
@@ -245,6 +284,14 @@ public final class RecordingSession {
     }
 
     public void openCheckpointWriter(File f) {
+        openCheckpointWriter(f, false);
+    }
+
+    /**
+     * @param append true when resuming: continue the existing raw section
+     *               stream instead of truncating it.
+     */
+    public void openCheckpointWriter(File f, boolean append) {
         synchronized (checkpointLock) {
             if (checkpointWriter != null) return;
             try {
@@ -253,9 +300,21 @@ public final class RecordingSession {
                 // try-with-resources here — it would close the stream
                 // immediately and every later flush would fail with
                 // "Stream Closed".
-                java.io.OutputStream fos = new FileOutputStream(f);
+                java.io.OutputStream fos = new FileOutputStream(f, append);
+                // Appending raw sections needs no header rewrite: the reader is
+                // lenient and concatenates sections. A fresh file still needs
+                // its header, written by the caller (see startCheckpointAsync).
+                // To keep resume simple we always append after the existing
+                // header — recovery merges generations in order.
                 checkpointStream = fos;
-                checkpointWriter = new GzipRecordingWriter(fos, false);
+                if (append && f.exists() && f.length() > 0) {
+                    // Raw mode writer writes its own 8-byte magic+flags header
+                    // in ctor — for append we must NOT emit a second header.
+                    // Use a headerless appender instead.
+                    checkpointWriter = GzipRecordingWriter.appendRaw(fos);
+                } else {
+                    checkpointWriter = new GzipRecordingWriter(fos, false);
+                }
             } catch (Exception e) {
                 checkpointWriter = null;
                 if (checkpointStream != null) {
@@ -300,6 +359,11 @@ public final class RecordingSession {
         List<TimelineEvent> out = new ArrayList<>(committedEvents);
         committedEvents.clear();
         return out;
+    }
+
+    /** Checkpointed (durable) event count — for /er stats. */
+    public synchronized int committedSize() {
+        return committedEvents.size();
     }
 
     public synchronized int lastCheckpointPaletteSize() {

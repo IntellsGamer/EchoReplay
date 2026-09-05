@@ -49,6 +49,32 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         return false;
     }
 
+    /**
+     * Per-recording playback gate. Grants when the sender has any of:
+     * <ul>
+     *   <li>{@code *} (console / full wildcard via permission plugin)</li>
+     *   <li>{@code echoreplay.play.*} (all recordings)</li>
+     *   <li>{@code echoreplay.play.<name>} (this recording, lowercase)</li>
+     *   <li>{@code echoreplay.play} (legacy: all recordings)</li>
+     * </ul>
+     */
+    static boolean canPlay(CommandSender s, String recordingName) {
+        if (s.hasPermission("*")) return true;
+        if (s.hasPermission("echoreplay.play.*")) return true;
+        if (recordingName != null && !recordingName.isEmpty()) {
+            String key = recordingName.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9_\\-]", "");
+            if (!key.isEmpty() && s.hasPermission("echoreplay.play." + key)) return true;
+        }
+        return s.hasPermission("echoreplay.play");
+    }
+
+    private boolean checkPlayPerm(CommandSender s, String recordingName) {
+        if (canPlay(s, recordingName)) return true;
+        s.sendMessage(Text.mm("<red>No permission (echoreplay.play." + recordingName.toLowerCase()
+                + " / echoreplay.play.*).</red>"));
+        return false;
+    }
+
     /** Wand item from {@code selection.wand-material} (default GOLDEN_AXE). */
     private Material wandMaterial() {
         try {
@@ -92,9 +118,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "cancel" -> cancel(sender);
             case "save" -> save(sender);
             case "status" -> status(sender);
+            case "stats" -> stats(sender);
             case "play" -> play(sender, args);
             case "pause" -> pause(sender);
-            case "resume" -> resume(sender);
+            case "resume" -> resume(sender, args);
             case "speed" -> speed(sender, args);
             case "seek" -> seek(sender, args);
             case "ff" -> ff(sender, args);
@@ -132,12 +159,13 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         s.sendMessage(Text.mm("""
             <gold>EchoReplay — server-side region replay</gold>
             <gray>Selection:</gray> <yellow>/er wand, pos1, pos2, select, expand, contract, shift, selinfo, clear</yellow>
-            <gray>Record:</gray> <yellow>/er record <name>, stop, cancel, save, status, marker <name></yellow>
+            <gray>Record:</gray> <yellow>/er record <name>, resume <name>, stop, cancel, save, status, stats, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
             <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
-            <gray>Debug:</gray> <yellow>/er debug nms</yellow>
+            <gray>Debug:</gray> <yellow>/er debug nms, stats</yellow>
+            <gray>Play permissions:</gray> <yellow>echoreplay.play.* = all, echoreplay.play.&lt;name&gt; = one recording (* = all)</yellow>
             """));
     }
 
@@ -328,6 +356,19 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         });
     }
 
+    private void resumeRec(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.record")) return;
+        requirePlayer(s, p -> {
+            if (args.length < 2) {
+                p.sendMessage(Text.mm("<red>Usage: /er resume <name></red>"));
+                return;
+            }
+            String msg = plugin.recordingManager().resume(p, args[1]);
+            if (msg != null) p.sendMessage(Text.mm(msg));
+            else p.sendMessage(Text.mm("<green>Resumed recording '" + args[1] + "' from checkpoint.</green>"));
+        });
+    }
+
     private void stop(CommandSender s) {
         if (!checkPerm(s, "echoreplay.record")) return;
         String msg = plugin.recordingManager().stop();
@@ -361,12 +402,65 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void stats(CommandSender s) {
+        if (!checkPerm(s, "echoreplay.use")) return;
+        var rm = plugin.recordingManager();
+        var sess = rm.activeSession();
+        StringBuilder sb = new StringBuilder("<gold>EchoReplay stats</gold>");
+        if (sess == null) {
+            sb.append("<newline><gray>Recording: none</gray>");
+        } else {
+            java.io.File cp = sess.checkpointFile();
+            long cpBytes = cp != null && cp.exists() ? cp.length() : 0;
+            long rotBytes = 0;
+            int rots = 0;
+            for (java.io.File r : sess.rotatedCheckpoints()) {
+                rots++;
+                try { rotBytes += r.length(); } catch (Exception e) {
+                    java.util.logging.Logger.getLogger("EchoReplay").log(
+                            java.util.logging.Level.FINE, "EchoReplay: stat rot size failed", e);
+                }
+            }
+            sb.append("<newline><gray>Recording '").append(sess.name()).append("' ")
+                    .append(RecordingManager.formatDuration(sess.mediaMillis()))
+                    .append(" state=").append(sess.state())
+                    .append(" buffered=").append(sess.sink().size())
+                    .append(" committed=").append(sess.committedSize())
+                    .append(" dropped=").append(sess.sink().getDroppedEvents())
+                    .append("<newline> rate=").append(sess.sink().getMaxEventsPerSecond())
+                    .append("/s palette=").append(sess.snapshotPalette().size())
+                    .append(" checkpoint=").append(cpBytes / 1024).append("KB")
+                    .append(" rots=").append(rots).append("+").append(rotBytes / 1024).append("KB")
+                    .append(" autosave=").append(rm.getAutosaveSeconds()).append("s")
+                    .append(" flush=").append(rm.getFlushSeconds()).append("s")
+                    .append(" diff=").append(dev.idebugger.echoreplay.record.RegionDiffRecorder.isNmsAvailable()
+                            ? "NMS" : "Bukkit-fallback")
+                    .append(sess.state() == dev.idebugger.echoreplay.record.RecordingSession.State.RECORDING
+                            ? "" : " (not recording)").append("</gray>");
+        }
+        var rep = plugin.replayManager().session();
+        if (rep == null) {
+            sb.append("<newline><gray>Playback: none</gray>");
+        } else {
+            sb.append("<newline><gray>Playing '").append(rep.name()).append("' ")
+                    .append(rep.virtual() ? "virtual" : "world")
+                    .append(" ").append(rep.appliedIndex()).append("/").append(rep.timelineSize())
+                    .append(" viewers=").append(rep.viewerCount())
+                    .append(" speed=").append(rep.clock().speed())
+                    .append(rep.clock().paused() ? " paused" : "")
+                    .append("<newline> ids: ").append(rep.fakeIdsDescribe())
+                    .append(" virtBlocks=").append(rep.virtualSnapshotSize()).append("</gray>");
+        }
+        s.sendMessage(Text.mm(sb.toString()));
+    }
+
     private void play(CommandSender s, String[] args) {
-        if (!checkPerm(s, "echoreplay.play")) return;
         if (args.length < 2) {
+            if (!checkPerm(s, "echoreplay.play")) return;
             s.sendMessage(Text.mm("<red>Usage: /er play <name> [virtual|world]</red>"));
             return;
         }
+        if (!checkPlayPerm(s, args[1])) return;
         boolean virtual = false;
         if (args.length > 2 && args[2].equalsIgnoreCase("virtual")) virtual = true;
         Player player = s instanceof Player p ? p : null;
@@ -379,7 +473,13 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         s.sendMessage(Text.mm(plugin.replayManager().pause()));
     }
 
-    private void resume(CommandSender s) {
+    private void resume(CommandSender s, String[] args) {
+        // /er resume <name> = continue a checkpointed recording (record perm).
+        // /er resume (no args) = unpause playback (control perm).
+        if (args.length > 1) {
+            resumeRec(s, args);
+            return;
+        }
         if (!checkPerm(s, "echoreplay.control")) return;
         s.sendMessage(Text.mm(plugin.replayManager().resume()));
     }
@@ -444,6 +544,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
 
     private void watch(CommandSender s) {
         if (!checkPerm(s, "echoreplay.watch")) return;
+        var rep = plugin.replayManager().session();
+        if (rep != null && !checkPlayPerm(s, rep.name())) return;
         requirePlayer(s, p -> s.sendMessage(Text.mm(plugin.replayManager().watch(p))));
     }
 
@@ -454,6 +556,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             s.sendMessage(Text.mm("<red>No replay playing.</red>"));
             return;
         }
+        if (!checkPlayPerm(s, rep.name())) return;
         requirePlayer(s, p -> {
             // /er cam off  -> stop following
             if (args.length < 2 || args[1].equalsIgnoreCase("off")) {
@@ -474,12 +577,13 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void spectate(CommandSender s, String[] args) {
-        if (!checkPerm(s, "echoreplay.play")) return;
         ReplaySession rep = plugin.replayManager().session();
         if (rep == null) {
+            if (!checkPerm(s, "echoreplay.play")) return;
             s.sendMessage(Text.mm("<red>No replay playing.</red>"));
             return;
         }
+        if (!checkPlayPerm(s, rep.name())) return;
         requirePlayer(s, p -> {
             if (args.length < 2) {
                 s.sendMessage(Text.mm("<red>Usage: /er spectate <player-name></red>"));
@@ -496,12 +600,13 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     }
 
     private void stopspectate(CommandSender s) {
-        if (!checkPerm(s, "echoreplay.play")) return;
         ReplaySession rep = plugin.replayManager().session();
         if (rep == null) {
+            if (!checkPerm(s, "echoreplay.play")) return;
             s.sendMessage(Text.mm("<red>No replay playing.</red>"));
             return;
         }
+        if (!checkPlayPerm(s, rep.name())) return;
         requirePlayer(s, p -> {
             if (rep.stopSpectate(p)) {
                 s.sendMessage(Text.mm("<green>Spectate ended — your previous state was restored.</green>"));
@@ -513,9 +618,11 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
 
     private void list(CommandSender s) {
         if (!checkPerm(s, "echoreplay.use")) return;
-        var entries = plugin.recordingIndex().all();
+        var entries = plugin.recordingIndex().all().stream()
+                .filter(e -> canPlay(s, e.name()))
+                .toList();
         if (entries.isEmpty()) {
-            s.sendMessage(Text.mm("<gray>No recordings.</gray>"));
+            s.sendMessage(Text.mm("<gray>No recordings (or no permission).</gray>"));
             return;
         }
         List<Component> msgs = new ArrayList<>();
@@ -535,6 +642,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             s.sendMessage(Text.mm("<red>Usage: /er info <name></red>"));
             return;
         }
+        if (!checkPlayPerm(s, args[1])) return;
         var e = plugin.recordingIndex().get(args[1]);
         if (e == null) {
             s.sendMessage(Text.mm("<red>No such recording.</red>"));
@@ -711,7 +819,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
-                "selinfo", "clear", "record", "stop", "cancel", "save", "status", "play", "pause", "resume",
+                "selinfo", "clear", "record", "resume", "stop", "cancel", "save", "status", "stats", "play", "pause", "resume",
                 "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "spectate",
                 "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border", "debug");
         if (args.length == 1) {
@@ -722,7 +830,8 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && (args[0].equalsIgnoreCase("play") || args[0].equalsIgnoreCase("info")
                 || args[0].equalsIgnoreCase("delete") || args[0].equalsIgnoreCase("watch"))) {
             return plugin.recordingIndex().all().stream().map(e -> e.name())
-                    .filter(n -> n.startsWith(args[1])).collect(java.util.stream.Collectors.toList());
+                    .filter(n -> n.startsWith(args[1]) && canPlay(sender, n))
+                    .collect(java.util.stream.Collectors.toList());
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("speed")) {
             return Arrays.asList("0.25", "0.5", "1", "2", "4", "8", "16");
@@ -734,6 +843,23 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         if (args.length == 2 && args[0].equalsIgnoreCase("debug")) {
             return Arrays.asList("nms").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("resume")) {
+            // Complete resumable checkpoints (live .partial files).
+            try {
+                java.io.File dir = plugin.recordingManager().recordingsDir();
+                String[] names = dir.list((d, n) -> n.endsWith(".echoreplay.gz.partial"));
+                List<String> out = new ArrayList<>();
+                if (names != null) for (String f : names) {
+                    String rec = f.substring(0, f.length() - ".echoreplay.gz.partial".length());
+                    if (rec.startsWith(args[1])) out.add(rec);
+                }
+                return out;
+            } catch (Exception e) {
+                java.util.logging.Logger.getLogger("EchoReplay").log(
+                        java.util.logging.Level.FINE, "EchoReplay: resume tab-complete failed", e);
+                return List.of();
+            }
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("cam") || args[0].equalsIgnoreCase("spectate"))) {
             var rep = plugin.replayManager().session();

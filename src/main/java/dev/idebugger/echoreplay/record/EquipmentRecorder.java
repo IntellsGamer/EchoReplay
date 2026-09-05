@@ -172,6 +172,17 @@ public final class EquipmentRecorder implements Listener {
             org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.FINE,
                     "EchoReplay: could not deserialize item blob (" + data.length
                             + " bytes, likely cross-version NBT), downgrading to air", e);
+            // Cross-version: a 1.21.11 spear (or other new item) has no
+            // Material on 1.21.5 — substitute an appropriate visible item
+            // (spear -> trident) instead of an empty hand.
+            try {
+                org.bukkit.inventory.ItemStack fb =
+                        dev.idebugger.echoreplay.util.CrossVersion.fallbackItemForBlob(data);
+                if (fb != null && !fb.getType().isAir()) return fb;
+            } catch (Exception ex) {
+                java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE,
+                        "EchoReplay: cross-version item fallback failed", ex);
+            }
         }
         return org.bukkit.inventory.ItemStack.empty();
     }
