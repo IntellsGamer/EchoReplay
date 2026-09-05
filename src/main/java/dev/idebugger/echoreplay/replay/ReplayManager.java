@@ -28,9 +28,11 @@ public final class ReplayManager implements Listener {
     private final EchoReplay plugin;
     private ReplaySession session;
     private boolean physicsFrozen = false;
+    private final ControlModeManager controls;
 
     public ReplayManager(EchoReplay plugin) {
         this.plugin = plugin;
+        this.controls = new ControlModeManager(plugin, this);
     }
 
     public void onEnable(org.bukkit.configuration.file.FileConfiguration config) {
@@ -39,9 +41,18 @@ public final class ReplayManager implements Listener {
 
     public void registerListeners(EchoReplay p) {
         p.getServer().getPluginManager().registerEvents(this, p);
+        p.getServer().getPluginManager().registerEvents(controls, p);
     }
 
+    public ControlModeManager controls() { return controls; }
+
     public void onDisable() {
+        try {
+            controls.clearAll();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control restore on disable failed", e);
+        }
         if (session != null) {
             session.stop();
             // Drain any pending terrain restore synchronously: at shutdown
@@ -76,6 +87,12 @@ public final class ReplayManager implements Listener {
             if (done) {
                 session = null;
             }
+        }
+        try {
+            controls.tick();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control tick failed", e);
         }
     }
 
@@ -156,6 +173,12 @@ public final class ReplayManager implements Listener {
         // Begins the async stop (fakes destroyed now, terrain restores over
         // the next ticks); the session clears itself when done.
         session.stop();
+        try {
+            controls.clearAll();
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control clear on stop failed", e);
+        }
         return "<green>Stopped playback.</green>";
     }
 
@@ -230,6 +253,12 @@ public final class ReplayManager implements Listener {
     public String leave(Player p) {
         if (session == null) return "<red>No replay is playing.</red>";
         session.removeViewer(p);
+        try {
+            controls.disable(p);
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control clear on leave failed", e);
+        }
         return "<gray>You left the replay.</gray>";
     }
 

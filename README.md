@@ -25,8 +25,8 @@ mvn -DskipTests clean package
 
 | artifact | Paper | PacketEvents |
 |----------|-------|--------------|
-| `1.21.5/target/echoreplay-1.21.5+1.1.2.jar` | 1.21.5 | 2.8.0 |
-| `1.21.11/target/echoreplay-1.21.11+1.1.2.jar` | 1.21.11 | 2.13.0 |
+| `1.21.5/target/echoreplay-1.21.5+1.1.3.jar` | 1.21.5 | 2.8.0 |
+| `1.21.11/target/echoreplay-1.21.11+1.1.3.jar` | 1.21.11 | 2.13.0 |
 
 ## Commands
 
@@ -64,6 +64,9 @@ mvn -DskipTests clean package
 - `/er seek <seconds|mm:ss|marker-name>`
 - `/er ff [s]`, `/er rewind [s]` (default 10s)
 - `/er stopplay`
+- `/er control [on|off|toggle|status]` — hotbar VCR controls (pause, resume,
+  stop, -10s, +10s, speed cycle, restart, leave, help); hotbar saved, locked
+  against move/drop, restored on off, stop, leave, quit or server stop
 - `/er watch` — join the running replay (state sync: entity snapshot + past
   block changes in virtual mode); `/er leave` to drop out
 - `/er cam <entity-name|off>` — spectator-follow a recorded entity
@@ -102,7 +105,7 @@ mvn -DskipTests clean package
 | `echoreplay.play` | op | `play`, `watch` (also required for auto-watch), `spectate`, `stopspectate` |
 | `echoreplay.play.*` | op | play any recording (wildcard parent) |
 | `echoreplay.play.<name>` | op | play one recording (lowercase name; `*` = all) |
-| `echoreplay.control` | op | `pause`, `resume`, `speed`, `seek`, `ff`, `rewind`, `stopplay`, `leave` |
+| `echoreplay.control` | op | `pause`, `resume`, `speed`, `seek`, `ff`, `rewind`, `stopplay`, `leave`, `control` |
 | `echoreplay.delete` | op | `delete`, `rename`, `confirm` |
 | `echoreplay.border` | true | `border` |
 | `echoreplay.bypass-limits` | op | skip selection volume/span limits |

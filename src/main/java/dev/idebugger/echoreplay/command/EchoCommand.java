@@ -128,6 +128,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             case "rewind" -> rewind(sender, args);
             case "stopplay" -> stopplay(sender);
             case "leave" -> leave(sender);
+            case "control" -> control(sender, args);
             case "watch" -> watch(sender);
             case "cam" -> cam(sender, args);
             case "spectate" -> spectate(sender, args);
@@ -161,6 +162,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
             <gray>Selection:</gray> <yellow>/er wand, pos1, pos2, select, expand, contract, shift, selinfo, clear</yellow>
             <gray>Record:</gray> <yellow>/er record <name>, resume <name>, stop, cancel, save, status, stats, marker <name></yellow>
             <gray>Play:</gray> <yellow>/er play <name> [virtual|world], pause, resume, speed <x>, seek <s|mm:ss>, ff [s], rewind [s], stopplay, leave, watch <name>, cam <name></yellow>
+            <gray>Controls:</gray> <yellow>/er control [on|off|toggle|status] (hotbar VCR: pause, resume, stop, -10s, +10s, speed, restart, leave, help)</yellow>
             <gray>First-person:</gray> <yellow>/er spectate <player>, stopspectate (become a recorded player: their view, position, health, hunger and inventory)</yellow>
             <gray>Manage:</gray> <yellow>/er list, info <name>, delete <name>, rename <old> <new></yellow>
             <gray>Border:</gray> <yellow>/er border [on|off|toggle|status]</yellow>
@@ -544,6 +546,24 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         requirePlayer(s, p -> s.sendMessage(Text.mm(plugin.replayManager().leave(p))));
     }
 
+    private void control(CommandSender s, String[] args) {
+        if (!checkPerm(s, "echoreplay.control")) return;
+        requirePlayer(s, p -> {
+            var controls = plugin.replayManager().controls();
+            String mode = args.length > 1 ? args[1].toLowerCase() : "toggle";
+            switch (mode) {
+                case "on", "enable", "enabled", "true" ->
+                        s.sendMessage(Text.mm(controls.setEnabled(p, true)));
+                case "off", "disable", "disabled", "false" ->
+                        s.sendMessage(Text.mm(controls.setEnabled(p, false)));
+                case "toggle" -> s.sendMessage(Text.mm(controls.toggle(p)));
+                case "status", "info", "state", "help" ->
+                        s.sendMessage(Text.mm(controls.statusText(p)));
+                default -> s.sendMessage(Text.mm("<red>Usage: /er control [on|off|toggle|status]</red>"));
+            }
+        });
+    }
+
     private void watch(CommandSender s) {
         if (!checkPerm(s, "echoreplay.watch")) return;
         var rep = plugin.replayManager().session();
@@ -822,7 +842,7 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         List<String> subs = Arrays.asList("wand", "pos1", "pos2", "select", "expand", "contract", "shift",
                 "selinfo", "clear", "record", "resume", "stop", "cancel", "save", "status", "stats", "play", "pause", "resume",
-                "speed", "seek", "ff", "rewind", "stopplay", "leave", "watch", "cam", "spectate",
+                "speed", "seek", "ff", "rewind", "stopplay", "leave", "control", "watch", "cam", "spectate",
                 "stopspectate", "list", "info", "delete", "rename", "confirm", "marker", "border", "debug");
         if (args.length == 1) {
             List<String> out = new ArrayList<>();
@@ -844,6 +864,10 @@ public final class EchoCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("debug")) {
             return Arrays.asList("nms").stream()
+                    .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("control")) {
+            return Arrays.asList("on", "off", "toggle", "status").stream()
                     .filter(s -> s.startsWith(args[1].toLowerCase())).toList();
         }
         if (args.length == 2 && args[0].equalsIgnoreCase("resume")) {
