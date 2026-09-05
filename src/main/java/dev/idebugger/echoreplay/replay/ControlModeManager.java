@@ -122,8 +122,8 @@ public final class ControlModeManager implements Listener {
     public String statusText(Player p) {
         StringBuilder sb = new StringBuilder("<gold>Controls: ")
                 .append(isEnabled(p) ? "<green>ON</green>" : "<gray>OFF</gray>")
-                .append("</gold><newline><gray>0 Pause | 1 Resume | 2 Stop | 3 -10s | 4 +10s")
-                .append("<newline>5 Speed | 6 Restart | 7 Leave | 8 Help")
+                .append("</gold><newline><gray>0 Help | 1 Restart | 2 -10s | 3 Pause | <white>4 Stop</white>")
+                .append("<newline>5 Resume | 6 +10s | 7 Speed | 8 Leave")
                 .append("<newline>Hotbar is locked while on; stopping playback, leaving,")
                 .append(" quitting or server stop restores it.</gray>");
         return sb.toString();
@@ -172,24 +172,51 @@ public final class ControlModeManager implements Listener {
     }
 
     private void giveControls(Player p) {
-        p.getInventory().setItem(0, controlItem(Material.REDSTONE_BLOCK, ACTION_PAUSE,
-                "<red>Pause</red>", "Right-click: pause playback"));
-        p.getInventory().setItem(1, controlItem(Material.EMERALD_BLOCK, ACTION_RESUME,
-                "<green>Resume</green>", "Right-click: resume playback"));
-        p.getInventory().setItem(2, controlItem(Material.BARRIER, ACTION_STOP,
-                "<red>Stop</red>", "Right-click: stop playback"));
-        p.getInventory().setItem(3, controlItem(Material.ARROW, ACTION_REWIND,
-                "<yellow>Rewind 10s</yellow>", "Right-click: back 10 seconds"));
-        p.getInventory().setItem(4, controlItem(Material.SPECTRAL_ARROW, ACTION_FF,
-                "<yellow>Forward 10s</yellow>", "Right-click: forward 10 seconds"));
-        p.getInventory().setItem(5, controlItem(Material.SUGAR, ACTION_SPEED,
-                "<aqua>Speed</aqua>", "Right-click: cycle 0.5-1-2-4-8x"));
-        p.getInventory().setItem(6, controlItem(Material.RECOVERY_COMPASS, ACTION_RESTART,
-                "<gold>Restart</gold>", "Right-click: seek to start"));
-        p.getInventory().setItem(7, controlItem(Material.OAK_DOOR, ACTION_LEAVE,
-                "<gray>Leave</gray>", "Right-click: leave the replay"));
-        p.getInventory().setItem(8, controlItem(Material.BOOK, ACTION_STATUS,
+        // Symmetric VCR bar: pause/resume flank a glowing center stop,
+        // rewind/FF on the wings, restart/speed mid-wings, help/leave edges.
+        // 0 Help | 1 Restart | 2 Rewind | 3 Pause | 4 CENTER Stop |
+        // 5 Resume | 6 FF | 7 Speed | 8 Leave
+        p.getInventory().setItem(0, controlItem(Material.BOOK, ACTION_STATUS,
                 "<white>Help</white>", "Right-click: show controls"));
+        p.getInventory().setItem(1, controlItem(Material.RECOVERY_COMPASS, ACTION_RESTART,
+                "<gold>⏮ Restart</gold>", "Right-click: seek to start"));
+        p.getInventory().setItem(2, controlItem(Material.ARROW, ACTION_REWIND,
+                "<yellow>⏪ Rewind 10s</yellow>", "Right-click: back 10 seconds"));
+        p.getInventory().setItem(3, controlItem(Material.REDSTONE_BLOCK, ACTION_PAUSE,
+                "<red>⏸ Pause</red>", "Right-click: pause playback"));
+        p.getInventory().setItem(4, centerItem());
+        p.getInventory().setItem(5, controlItem(Material.EMERALD_BLOCK, ACTION_RESUME,
+                "<green>Resume ▶</green>", "Right-click: resume playback"));
+        p.getInventory().setItem(6, controlItem(Material.SPECTRAL_ARROW, ACTION_FF,
+                "<yellow>Forward 10s ⏩</yellow>", "Right-click: forward 10 seconds"));
+        p.getInventory().setItem(7, controlItem(Material.SUGAR, ACTION_SPEED,
+                "<aqua>Speed</aqua>", "Right-click: cycle 0.5-1-2-4-8x"));
+        p.getInventory().setItem(8, controlItem(Material.OAK_DOOR, ACTION_LEAVE,
+                "<gray>Leave</gray>", "Right-click: leave the replay"));
+        try {
+            p.getInventory().setHeldItemSlot(4);
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control center select failed", e);
+        }
+    }
+
+    /** Glowing center piece so the middle of the bar pops. */
+    private ItemStack centerItem() {
+        ItemStack it = controlItem(Material.BARRIER, ACTION_STOP,
+                "<red>⏹ Stop</red>", "Right-click: stop playback");
+        try {
+            ItemMeta meta = it.getItemMeta();
+            if (meta != null) {
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.LURE, 1, true);
+                meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ENCHANTS);
+                it.setItemMeta(meta);
+            }
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control center glint failed", e);
+        }
+        return it;
     }
 
     /** Re-apply controls without re-saving (respawn path). */
@@ -245,18 +272,30 @@ public final class ControlModeManager implements Listener {
         }
     }
 
+    /** Hotbar-click feedback goes to the action bar (above the hotbar) for
+     *  convenience — the player's eyes are already there. Command outputs
+     *  (typed /er control ...) stay in chat. */
+    private void feedback(Player p, String miniMessage) {
+        try {
+            p.sendActionBar(Text.mm(miniMessage));
+        } catch (Exception e) {
+            java.util.logging.Logger.getLogger("EchoReplay").log(
+                    java.util.logging.Level.FINE, "EchoReplay: control feedback failed", e);
+        }
+    }
+
     private void runAction(Player p, String action) {
         if (action == null) return;
         try {
             switch (action) {
-                case ACTION_PAUSE -> p.sendMessage(Text.mm(replays.pause()));
-                case ACTION_RESUME -> p.sendMessage(Text.mm(replays.resume()));
+                case ACTION_PAUSE -> feedback(p, replays.pause());
+                case ACTION_RESUME -> feedback(p, replays.resume());
                 case ACTION_STOP -> {
-                    p.sendMessage(Text.mm(replays.stopPlay(false)));
+                    feedback(p, replays.stopPlay(false));
                     disable(p);
                 }
-                case ACTION_REWIND -> p.sendMessage(Text.mm(replays.rewind(10)));
-                case ACTION_FF -> p.sendMessage(Text.mm(replays.forward(10)));
+                case ACTION_REWIND -> feedback(p, replays.rewind(10));
+                case ACTION_FF -> feedback(p, replays.forward(10));
                 case ACTION_SPEED -> {
                     ReplaySession s = replays.session();
                     double cur = s != null ? s.clock().speed() : 1.0;
@@ -267,19 +306,19 @@ public final class ControlModeManager implements Listener {
                             break;
                         }
                     }
-                    p.sendMessage(Text.mm(replays.speed(next)));
+                    feedback(p, replays.speed(next));
                 }
                 case ACTION_RESTART -> {
                     ReplaySession s = replays.session();
                     if (s == null) {
-                        p.sendMessage(Text.mm("<red>No replay playing.</red>"));
+                        feedback(p, "<red>No replay playing.</red>");
                     } else {
                         s.seekTo(0);
-                        p.sendMessage(Text.mm("<gray>Seeked to start.</gray>"));
+                        feedback(p, "<gray>Seeked to start.</gray>");
                     }
                 }
                 case ACTION_LEAVE -> {
-                    p.sendMessage(Text.mm(replays.leave(p)));
+                    feedback(p, replays.leave(p));
                     disable(p);
                 }
                 case ACTION_STATUS -> p.sendMessage(Text.mm(statusText(p)));
