@@ -48,6 +48,8 @@ public sealed interface TimelineEvent
     record WorldTime(long tickMillis, long time, boolean cycling) implements TimelineEvent {}
     record Weather(long tickMillis, int rainStrength, int thunderStrength) implements TimelineEvent {}
     record Explosion(long tickMillis, Vec3d pos, float power) implements TimelineEvent {}
+    // Note: power <= 0 marks a damageless burst (wind charge in old takes):
+    // playback renders wind-burst sound+gust instead of generic explode.
     record ItemUse(long tickMillis, int npcId, int hand, boolean started) implements TimelineEvent {}
     record Teleport(long tickMillis, int npcId, Vec3d pos, Rotation rot) implements TimelineEvent {}
     record Effect(long tickMillis, int npcId, boolean add, String effectKey, byte[] data) implements TimelineEvent {}

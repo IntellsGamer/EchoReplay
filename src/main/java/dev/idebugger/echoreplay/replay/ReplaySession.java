@@ -2385,6 +2385,18 @@ public final class ReplaySession {
     private void onExplosion(TimelineEvent.Explosion e) {
         if (silentApply) return;
         org.bukkit.Location loc = new org.bukkit.Location(world, e.pos().x(), e.pos().y(), e.pos().z());
+        if (e.power() <= 0) {
+            // Damageless burst: old takes recorded wind charges as explosions
+            // (record-side now skips them). Replay the wind-burst sound+gust,
+            // not generic explode.
+            for (Player p : tickViewers) {
+                try {
+                    p.spawnParticle(org.bukkit.Particle.GUST, loc, 8, 0.2f, 0.2f, 0.2f, 0.5f);
+                    p.playSound(loc, "entity.wind_charge.wind_burst", org.bukkit.SoundCategory.BLOCKS, 1f, 1f);
+                } catch (Exception ignored) { java.util.logging.Logger.getLogger("EchoReplay").log(java.util.logging.Level.FINE, "EchoReplay: suppressed Exception", ignored);}
+            }
+            return;
+        }
         for (Player p : tickViewers) {
             try {
                 // EXPLOSION_EMITTER is the renamed (1.20.2+) big burst; the old
